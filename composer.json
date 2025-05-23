@@ -5,13 +5,18 @@
   "license": "MIT",
   "require": {
     "php": "^8.4",
-    "monkeyscloud/monkeyslegion-database": "^1.0",
+    "monkeyscloud/monkeyslegion-database": "^1.0@dev",
     "ext-pdo": "*"
   },
   "autoload": {
     "psr-4": {
       "MonkeysLegion\\Query\\": "src/Query/",
       "MonkeysLegion\\Repository\\": "src/Repository/"
+    }
+  },
+  "extra": {
+    "branch-alias": {
+      "dev-main": "1.0-dev"
     }
   }
 }
