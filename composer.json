@@ -1,0 +1,17 @@
+{
+  "name": "monkeyscloud/monkeyslegion-query",
+  "description": "Lightweight Query Builder & Micro‑ORM for MonkeysLegion",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.4",
+    "monkeyscloud/monkeyslegion-database": "^1.0",
+    "ext-pdo": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "MonkeysLegion\\Query\\": "src/Query/",
+      "MonkeysLegion\\Repository\\": "src/Repository/"
+    }
+  }
+}
