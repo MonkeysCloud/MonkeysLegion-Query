@@ -6,6 +6,7 @@ A **lightweight Query Builder & Micro-ORM** for MonkeysLegion, built on top of y
 * **Safe parameter binding**: automatic placeholder naming to prevent SQL injection
 * **Chainable API**: build complex queries in a single expression
 * **EntityRepository**: base class with common CRUD and query methods
+* **RepositoryFactory**: dynamic factory to instantiate any repository without manual DI wiring
 * **Zero external dependencies** beyond PDO
 
 ---
@@ -39,7 +40,8 @@ src/
 ├── Query/
 │   └── QueryBuilder.php
 └── Repository/
-    └── EntityRepository.php
+    ├── EntityRepository.php
+    └── RepositoryFactory.php
 ```
 
 ---
@@ -52,10 +54,10 @@ use MonkeysLegion\Query\QueryBuilder;
 
 // get Connection from DI container
 /** @var Connection $conn */
-$conn = /* ... */;
+\$conn = /* ... */;
 \$qb   = new QueryBuilder(\$conn);
 
-// SELECT with WHERE, JOIN, ORDER, LIMIT
+// SELECT with WHERE, JOIN, ORDER, LIMIT, OFFSET
 \$users = \$qb
     ->select(['u.id', 'u.name', 'p.title'])
     ->from('users', 'u')
@@ -102,50 +104,93 @@ class UserRepository extends EntityRepository
 }
 ```
 
-Register in your DI container:
+The `EntityRepository` provides:
+
+* `findAll(array \$criteria = []): object[]`
+* `find(int \$id): ?object`
+* `findBy(array \$criteria, array \$orderBy = [], int|null \$limit = null, int|null \$offset = null): object[]`
+* `findOneBy(array \$criteria): ?object`
+* `count(array \$criteria = []): int`
+* `save(object \$entity): int` (insert or update)
+* `delete(int \$id): int`
+
+---
+
+## ⚙️ Dynamic RepositoryFactory
+
+Instead of manual DI entries for each repository, use the `RepositoryFactory`:
+
+```php
+namespace MonkeysLegion\Repository;
+
+use MonkeysLegion\Query\QueryBuilder;
+
+final class RepositoryFactory
+{
+    public function __construct(private QueryBuilder \$qb) {}
+
+    /**
+     * @template T of EntityRepository
+     * @param class-string<T> \$repoClass
+     * @return T
+     */
+    public function create(string \$repoClass): object
+    {
+        if (!is_subclass_of(\$repoClass, EntityRepository::class, true)) {
+            throw new \InvalidArgumentException("{\$repoClass} must extend EntityRepository");
+        }
+        return new \$repoClass(\$this->qb);
+    }
+}
+```
+
+Register it in your DI config:
 
 ```php
 use MonkeysLegion\Query\QueryBuilder;
-use App\Repository\UserRepository;
+use MonkeysLegion\Repository\RepositoryFactory;
 
-QueryBuilder::class      => fn($c) => new QueryBuilder(\$c->get(Connection::class)),
-UserRepository::class   => fn($c) => new UserRepository(\$c->get(QueryBuilder::class)),
+Connection::class       => fn()   => new Connection(require __DIR__.'/database.php'),
+QueryBuilder::class    => fn(\$c) => new QueryBuilder(\$c->get(Connection::class)),
+RepositoryFactory::class => fn(\$c) => new RepositoryFactory(\$c->get(QueryBuilder::class)),
 ```
 
-Common methods:
+---
+
+## 🚀 Using RepositoryFactory
+
+In your controller or service:
 
 ```php
-\$repo = \$container->get(UserRepository::class);
+use MonkeysLegion\Repository\RepositoryFactory;
+use App\Repository\UserRepository;
 
-// find all active users
-\$active = \$repo->findAll(['status' => 'active']);
+final class UserController
+{
+    public function __construct(private RepositoryFactory \$repos) {}
 
-// find by primary key
-\$user = \$repo->find(42);
+    public function list(): array
+    {
+        /** @var UserRepository \$userRepo */
+        \$userRepo = \$this->repos->create(UserRepository::class);
+        return \$userRepo->findAll(['status' => 'active']);
+    }
+}
+```
 
-// find by criteria with sorting and pagination
-\$recent = \$repo->findBy(
-    ['status'=>'active'],
-    ['created_at'=>'DESC'],
-    limit: 5,
-    offset: 0
-);
+Or, if you prefer a helper on `QueryBuilder`:
 
-// count users
-\$count = \$repo->count(['status'=>'active']);
+```php
+public function repository(string \$repoClass): EntityRepository
+{
+    return new \$repoClass(\$this);
+}
+```
 
-// save new user
-\$u = new App\Entity\User();
-\$u->name = 'Bob';\$u->email = 'bob@example.com';
-\$id = \$repo->save(\$u);
+Then:
 
-// update existing
-\$u->id = \$id;
-\$u->name = 'Bobby';
-\$repo->save(\$u);
-
-// delete
-\$repo->delete(\$id);
+```php
+\$userRepo = \$qb->repository(UserRepository::class);
 ```
 
 ---
@@ -153,7 +198,7 @@ Common methods:
 ## ⚙️ Extending
 
 * **Custom queries**: use `custom(\$sql, \$params)` to run raw SQL
-* **Transactions**: use `$conn->pdo()->beginTransaction()` etc.
+* **Transactions**: use `\$conn->pdo()->beginTransaction()` etc.
 * **Relations**: add methods in your repository to eager load related data
 
 ---
