@@ -6,8 +6,13 @@ namespace MonkeysLegion\Query;
 use MonkeysLegion\Database\MySQL\Connection;
 use PDO;
 
+/**
+ * QueryBuilder — a fluent SQL builder supporting SELECT/INSERT/UPDATE/DELETE
+ * with joins, conditions, grouping, ordering and pagination.
+ */
 final class QueryBuilder
 {
+    /** @var array<string,mixed> */
     private array $parts = [
         'select'   => '*',
         'distinct' => false,
@@ -22,11 +27,22 @@ final class QueryBuilder
         'custom'   => null,
     ];
 
+    /** @var array<string,mixed> */
     private array $params = [];
-    private int   $counter = 0;
 
+    /** @var int */
+    private int $counter = 0;
+
+    /**
+     * Constructor.
+     *
+     * @param Connection $conn Database connection instance.
+     */
     public function __construct(private Connection $conn) {}
 
+    /**
+     * Resets the query builder to its initial state.
+     */
     public function select(string|array $columns = ['*']): self
     {
         $this->parts['select'] = is_array($columns)
@@ -35,67 +51,142 @@ final class QueryBuilder
         return $this;
     }
 
+    /**
+     * Adds DISTINCT to the SELECT statement.
+     */
     public function distinct(): self
     {
         $this->parts['distinct'] = true;
         return $this;
     }
 
+    /**
+     * Sets the FROM clause.
+     *
+     * @param string $table The table name.
+     * @param string|null $alias Optional alias for the table.
+     */
     public function from(string $table, ?string $alias = null): self
     {
-        $this->parts['from'] = $alias
-            ? "$table AS $alias"
-            : $table;
+        $this->parts['from'] = $alias ? "$table AS $alias" : $table;
         return $this;
     }
 
-    public function join(string $table, string $alias, string $first, string $operator, string $second, string $type = 'INNER'): self
-    {
+    /**
+     * Adds a JOIN clause.
+     *
+     * @param string $table The table to join.
+     * @param string $alias The alias for the joined table.
+     * @param string $first The first column for the join condition.
+     * @param string $operator The operator for the join condition (e.g., '=', '<>', etc.).
+     * @param string $second The second column for the join condition.
+     * @param string $type The type of join (INNER, LEFT, RIGHT).
+     */
+    public function join(
+        string $table,
+        string $alias,
+        string $first,
+        string $operator,
+        string $second,
+        string $type = 'INNER'
+    ): self {
         $this->parts['joins'][] = strtoupper($type)
             . " JOIN $table AS $alias ON $first $operator $second";
         return $this;
     }
 
+    /**
+     * Adds an INNER JOIN clause.
+     *
+     * @param string $table The table to join.
+     * @param string $alias The alias for the joined table.
+     * @param string $first The first column for the join condition.
+     * @param string $operator The operator for the join condition (e.g., '=', '<>', etc.).
+     * @param string $second The second column for the join condition.
+     */
     public function leftJoin(string $table, string $alias, string $first, string $operator, string $second): self
     {
         return $this->join($table, $alias, $first, $operator, $second, 'LEFT');
     }
 
+    /**
+     * Adds a RIGHT JOIN clause.
+     *
+     * @param string $table The table to join.
+     * @param string $alias The alias for the joined table.
+     * @param string $first The first column for the join condition.
+     * @param string $operator The operator for the join condition (e.g., '=', '<>', etc.).
+     * @param string $second The second column for the join condition.
+     */
     public function rightJoin(string $table, string $alias, string $first, string $operator, string $second): self
     {
         return $this->join($table, $alias, $first, $operator, $second, 'RIGHT');
     }
 
+    /**
+     * Adds a FULL JOIN clause.
+     *
+     * @param string $column
+     * @param string $operator The operator for the join condition (e.g., '=', '<>', etc.).
+     * @param mixed $value
+     * @return QueryBuilder
+     */
     public function where(string $column, string $operator, mixed $value): self
     {
         $placeholder = $this->addParam($value);
         $this->parts['where'][] = [
-            'type' => count($this->parts['where']) ? 'OR' : 'AND',
-            'expr' => "$column $operator $placeholder"
+            'type' => count($this->parts['where']) ? 'AND' : '',
+            'expr' => "$column $operator $placeholder",
         ];
         return $this;
     }
 
+    /**
+     * Adds an AND condition to the WHERE clause.
+     *
+     * @param string $column The column name.
+     * @param string $operator The operator (e.g., '=', '<>', etc.).
+     * @param mixed $value The value to compare against.
+     */
     public function andWhere(string $column, string $operator, mixed $value): self
     {
         $placeholder = $this->addParam($value);
-        $this->parts['where'][] = ['type'=>'AND','expr'=>"$column $operator $placeholder"];
+        $this->parts['where'][] = ['type' => 'AND', 'expr' => "$column $operator $placeholder"];
         return $this;
     }
 
+    /**
+     * Adds an OR condition to the WHERE clause.
+     *
+     * @param string $column The column name.
+     * @param string $operator The operator (e.g., '=', '<>', etc.).
+     * @param mixed $value The value to compare against.
+     */
     public function orWhere(string $column, string $operator, mixed $value): self
     {
         $placeholder = $this->addParam($value);
-        $this->parts['where'][] = ['type'=>'OR','expr'=>"$column $operator $placeholder"];
+        $this->parts['where'][] = ['type' => 'OR', 'expr' => "$column $operator $placeholder"];
         return $this;
     }
 
+    /**
+     * Adds a GROUP BY clause.
+     *
+     * @param string ...$columns The columns to group by.
+     */
     public function groupBy(string ...$columns): self
     {
-        $this->parts['groupBy'] = array_merge($this->parts['groupBy'], $columns);
+        $this->parts['groupBy'] = array_unique([...$this->parts['groupBy'], ...$columns]);
         return $this;
     }
 
+    /**
+     * Adds a HAVING clause.
+     *
+     * @param string $column The column name.
+     * @param string $operator The operator (e.g., '=', '<>', etc.).
+     * @param mixed $value The value to compare against.
+     */
     public function having(string $column, string $operator, mixed $value): self
     {
         $placeholder = $this->addParam($value);
@@ -103,79 +194,165 @@ final class QueryBuilder
         return $this;
     }
 
+    /**
+     * Adds an ORDER BY clause.
+     *
+     * @param string $column The column to order by.
+     * @param string $direction The direction of the order (ASC or DESC).
+     */
     public function orderBy(string $column, string $direction = 'ASC'): self
     {
         $this->parts['orderBy'][] = "$column " . strtoupper($direction);
         return $this;
     }
 
+    /**
+     * Sets the LIMIT for the query.
+     *
+     * @param int $limit The maximum number of rows to return.
+     */
     public function limit(int $limit): self
     {
-        $this->parts['limit'] = $limit;
+        $this->parts['limit'] = max(0, $limit);
         return $this;
     }
 
+    /**
+     * Sets the OFFSET for the query.
+     *
+     * @param int $offset The number of rows to skip before starting to return rows.
+     */
     public function offset(int $offset): self
     {
-        $this->parts['offset'] = $offset;
+        $this->parts['offset'] = max(0, $offset);
         return $this;
     }
 
+    /**
+     * Sets a custom SQL statement.
+     *
+     * @param string $sql The custom SQL query.
+     * @param array $params Optional parameters to bind to the query.
+     */
     public function custom(string $sql, array $params = []): self
     {
         $this->parts['custom'] = $sql;
-        $this->params = $params;
+        $this->params          = $params;
         return $this;
     }
 
+    /**
+     * Inserts a new row into the specified table.
+     *
+     * @param string $table The table name.
+     * @param array $data The data to insert, as an associative array.
+     * @return int The ID of the inserted row.
+     * @throws \RuntimeException If the insert fails.
+     */
     public function insert(string $table, array $data): int
     {
         $cols = implode(', ', array_keys($data));
-        $phs  = implode(', ', array_map(fn($k)=>":$k", array_keys($data)));
+        $phs  = implode(', ', array_map(fn (string $k) => ":$k", array_keys($data)));
         $sql  = "INSERT INTO $table ($cols) VALUES ($phs)";
-        $stmt = $this->conn->pdo()->prepare($sql);
-        $stmt->execute($data);
-        return (int)$this->conn->pdo()->lastInsertId();
+
+        $stmt  = $this->conn->pdo()->prepare($sql);
+        $bound = array_combine(
+            array_map(fn (string $k) => ":$k", array_keys($data)),
+            $data
+        );
+
+        if (!$stmt->execute($bound)) {
+            [$state, $code, $msg] = $stmt->errorInfo();
+            throw new \RuntimeException("Insert failed: $state/$code – $msg");
+        }
+
+        $id = (int) $this->conn->pdo()->lastInsertId();
+        $this->reset();
+        return $id;
     }
 
+    /**
+     * Updates rows in the specified table.
+     *
+     * @param string $table The table name.
+     * @param array $data The data to update, as an associative array.
+     * @return QueryBuilder
+     */
     public function update(string $table, array $data): self
     {
-        $sets = implode(', ', array_map(fn($k)=>"$k = :$k", array_keys($data)));
+        $sets = implode(', ', array_map(fn (string $k) => "$k = :$k", array_keys($data)));
         $this->parts['custom'] = "UPDATE $table SET $sets";
-        $this->params = $data;
+        $this->params          = array_combine(
+            array_map(fn (string $k) => ":$k", array_keys($data)),
+            $data
+        );
         return $this;
     }
 
+    /**
+     * Deletes rows from the specified table.
+     *
+     * @param string $table The table name.
+     * @return QueryBuilder
+     */
     public function delete(string $table): self
     {
         $this->parts['custom'] = "DELETE FROM $table";
         return $this;
     }
 
+    /**
+     * Executes the query and returns the number of affected rows.
+     *
+     * @return int The number of rows affected by the query.
+     */
     public function execute(): int
     {
         $sql  = $this->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
         $stmt->execute($this->params);
-        return $stmt->rowCount();
+        $count = $stmt->rowCount();
+        $this->reset();
+        return $count;
     }
 
-    public function fetchAll(string $class='stdClass'): array
+    /**
+     * Fetches all results as an array of objects.
+     *
+     * @param string $class The class name to instantiate for each row.
+     * @return array An array of objects representing the rows.
+     */
+    public function fetchAll(string $class = 'stdClass'): array
     {
         $sql  = $this->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
         $stmt->execute($this->params);
-        return $stmt->fetchAll(PDO::FETCH_CLASS, $class);
+        $result = $stmt->fetchAll(PDO::FETCH_CLASS, $class);
+        $this->reset();
+        return $result;
     }
 
-    public function fetch(string $class='stdClass'): object|false
+    /**
+     * Fetches a single row as an object.
+     *
+     * @param string $class The class name to instantiate for the row.
+     * @return object|false An object representing the row, or false if no row was found.
+     */
+    public function fetch(string $class = 'stdClass'): object|false
     {
         $sql  = $this->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
         $stmt->execute($this->params);
-        return $stmt->fetchObject($class);
+        $result = $stmt->fetchObject($class);
+        $this->reset();
+        return $result;
     }
 
+    /**
+     * Returns the SQL query as a string.
+     *
+     * @return string The SQL query.
+     */
     public function toSql(): string
     {
         if ($this->parts['custom']) {
@@ -193,8 +370,8 @@ final class QueryBuilder
 
         if ($this->parts['where']) {
             $clauses = [];
-            foreach ($this->parts['where'] as $i=>$w) {
-                $prefix = $i ? ' '.$w['type'].' ' : '';
+            foreach ($this->parts['where'] as $i => $w) {
+                $prefix   = $i && $w['type'] ? ' ' . $w['type'] . ' ' : '';
                 $clauses[] = $prefix . $w['expr'];
             }
             $sql .= ' WHERE ' . implode('', $clauses);
@@ -223,10 +400,38 @@ final class QueryBuilder
         return $sql;
     }
 
+    /**
+     * Adds a parameter to the query and returns its placeholder.
+     *
+     * @param mixed $value The value to bind to the query.
+     * @return string The placeholder for the parameter.
+     */
     private function addParam(mixed $value): string
     {
-        $key = ':p'.$this->counter++;
+        $key              = ':p' . $this->counter++;
         $this->params[$key] = $value;
         return $key;
+    }
+
+    /**
+     * Resets the query builder to its initial state.
+     */
+    private function reset(): void
+    {
+        $this->parts = [
+            'select'   => '*',
+            'distinct' => false,
+            'from'     => '',
+            'joins'    => [],
+            'where'    => [],
+            'groupBy'  => [],
+            'having'   => [],
+            'orderBy'  => [],
+            'limit'    => null,
+            'offset'   => null,
+            'custom'   => null,
+        ];
+        $this->params  = [];
+        $this->counter = 0;
     }
 }
