@@ -1,14 +1,17 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Repository;
 
 use MonkeysLegion\Query\QueryBuilder;
+use MonkeysLegion\Entity\Attributes\Field;
+use ReflectionClass;
 
 /**
- * Base a repository with common CRUD and query methods.
+ * Base repository with common CRUD and query methods.
  *
- * Child classes should be set:
+ * Child classes should define:
  *   protected string $table;
  *   protected string $entityClass;
  */
@@ -99,7 +102,7 @@ abstract class EntityRepository
      */
     public function save(object $entity): int
     {
-        $data = get_object_vars($entity);
+        $data = $this->extractFields($entity);
         $qb   = clone $this->qb;
 
         if (!empty($data['id'])) {
@@ -122,5 +125,27 @@ abstract class EntityRepository
         return $qb->delete($this->table)
             ->where('id', '=', $id)
             ->execute();
+    }
+
+    /**
+     * Extract only properties annotated with #[Field] for persistence.
+     */
+    private function extractFields(object $entity): array
+    {
+        $data = [];
+        $ref  = new ReflectionClass($entity);
+
+        foreach ($ref->getProperties() as $prop) {
+            // Include only #[Field] properties
+            if (! $prop->getAttributes(Field::class)) {
+                continue;
+            }
+            if ($prop->isPrivate() || $prop->isProtected()) {
+                $prop->setAccessible(true);
+            }
+            $data[$prop->getName()] = $prop->getValue($entity);
+        }
+
+        return $data;
     }
 }
