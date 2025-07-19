@@ -38,8 +38,17 @@ final class RepositoryFactory
             {
                 parent::__construct($qb);
                 $this->entityClass = $entityClass;
-                $short             = strtolower(new \ReflectionClass($entityClass)->getShortName());
-                $this->table       = $short;
+
+                // either read a constant …
+                if (defined("$entityClass::TABLE")) {
+                    $this->table = $entityClass::TABLE;
+                    return;
+                }
+
+                // …or fall back to a *singular* guess
+                $this->table = strtolower(
+                    new \ReflectionClass($entityClass)->getShortName()
+                );
             }
         };
     }
