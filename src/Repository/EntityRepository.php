@@ -108,6 +108,7 @@ abstract class EntityRepository
         if (!empty($data['id'])) {
             $id = $data['id'];
             unset($data['id']);
+
             return $qb->update($this->table, $data)
                 ->where('id', '=', $id)
                 ->execute();
@@ -130,19 +131,30 @@ abstract class EntityRepository
     /**
      * Extract only properties annotated with #[Field] for persistence.
      */
+    /**
+     * Extract only properties annotated with #[Field] for persistence,
+     * skipping uninitialized id on new entities.
+     */
     private function extractFields(object $entity): array
     {
         $data = [];
         $ref  = new ReflectionClass($entity);
 
         foreach ($ref->getProperties() as $prop) {
-            // Include only #[Field] properties
+            // Only include properties marked with #[Field]
             if (! $prop->getAttributes(Field::class)) {
                 continue;
             }
+
+            // Skip uninitialized id on insert
+            if ($prop->getName() === 'id' && ! $prop->isInitialized($entity)) {
+                continue;
+            }
+
             if ($prop->isPrivate() || $prop->isProtected()) {
                 $prop->setAccessible(true);
             }
+
             $data[$prop->getName()] = $prop->getValue($entity);
         }
 
