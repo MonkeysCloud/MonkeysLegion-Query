@@ -23,4 +23,25 @@ final class RepositoryFactory
         }
         return new $repoClass($this->qb);
     }
+
+
+    /**
+     * Creates a repository for the given entity class.
+     *
+     * @param class-string $entityClass The fully qualified class name of the entity.
+     * @return EntityRepository
+     */
+    public function getRepository(string $entityClass): EntityRepository
+    {
+        return new class($this->qb, $entityClass) extends EntityRepository {
+            public function __construct(QueryBuilder $qb, string $entityClass)
+            {
+                parent::__construct($qb);
+                $this->entityClass = $entityClass;
+                $short             = strtolower(new \ReflectionClass($entityClass)->getShortName());
+                $this->table       = $short;
+            }
+        };
+    }
+
 }
