@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace MonkeysLegion\Repository;
 
+use InvalidArgumentException;
+use MonkeysLegion\Entity\Attributes\ManyToMany;
 use MonkeysLegion\Entity\Hydrator;
 use MonkeysLegion\Query\QueryBuilder;
 use MonkeysLegion\Entity\Attributes\Field;
@@ -194,5 +196,44 @@ abstract class EntityRepository
         }
 
         return $data;
+    }
+
+    /**
+     * Fetch entities in a MANY-TO-MANY relation.
+     *
+     * @param string $relationProp The name of the property on the entity that has #[ManyToMany].
+     * @param int|string $value The value to match on the inverse column.
+     * @return object[]                          Hydrated entity objects.
+     * @throws \ReflectionException
+     */
+    public function findByRelation(string $relationProp, int|string $value): array
+    {
+        $ref   = new ReflectionClass($this->entityClass);
+
+        if (! $ref->hasProperty($relationProp)) {
+            throw new InvalidArgumentException("Property {$relationProp} not found on {$this->entityClass}");
+        }
+        $prop  = $ref->getProperty($relationProp);
+        $attrs = $prop->getAttributes(ManyToMany::class);
+        if (! $attrs) {
+            throw new InvalidArgumentException("{$relationProp} is not a ManyToMany relation");
+        }
+
+        /** @var ManyToMany $rel */
+        $rel = $attrs[0]->newInstance();
+        $jt  = $rel->joinTable;            // instance of JoinTable
+        $jtName = $jt->name;               // e.g. "company_user"
+        $ownCol  = $jt->joinColumn;        // e.g. "company_id"
+        $invCol  = $jt->inverseColumn;     // e.g. "user_id"
+
+        // alias for our entity table (first letter of table name)
+        $alias = substr($this->table, 0, 1);
+
+        return $this->qb
+            ->select(["{$alias}.*"])
+            ->from($this->table, $alias)
+            ->join($jtName, 'j', "j.{$ownCol}", '=', "{$alias}.id")
+            ->where("j.{$invCol}", '=', $value)
+            ->fetchAll($this->entityClass);
     }
 }
