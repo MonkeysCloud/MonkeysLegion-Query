@@ -25,6 +25,8 @@ abstract class EntityRepository
 
     /**
      * Fetch all entities matching optional criteria.
+     *
+     * @param array<string,mixed> $criteria
      * @return object[]
      * @throws \ReflectionException
      */
@@ -44,6 +46,10 @@ abstract class EntityRepository
 
     /**
      * Find a single entity by primary key.
+     *
+     * @param int $id The primary key of the entity to find.
+     * @return object|null The found entity or null if not found.
+     * @throws \ReflectionException
      */
     public function find(int $id): ?object
     {
@@ -57,9 +63,11 @@ abstract class EntityRepository
 
     /**
      * Fetch entities by criteria, with optional ordering and pagination.
+     *
      * @param array<string,mixed> $criteria
      * @param array<string,string> $orderBy  column => direction
      * @return object[]
+     * @throws \ReflectionException
      */
     public function findBy(
         array $criteria,
@@ -82,6 +90,9 @@ abstract class EntityRepository
 
     /**
      * Find a single entity by arbitrary criteria.
+     *
+     * @param array<string,mixed> $criteria
+     * @return object|null The found entity or null if not found.
      */
     public function findOneBy(array $criteria): ?object
     {
@@ -91,6 +102,10 @@ abstract class EntityRepository
 
     /**
      * Count entities matching criteria.
+     *
+     * @param array<string,mixed> $criteria
+     * @return int The number of entities matching the criteria.
+     * @throws \ReflectionException
      */
     public function count(array $criteria = []): int
     {
@@ -105,6 +120,9 @@ abstract class EntityRepository
 
     /**
      * Persist a new or existing entity. Returns insert ID or affected rows.
+     *
+     * @param object $entity The entity instance to save.
+     * @return int The ID of the saved entity or number of affected rows.
      */
     public function save(object $entity): int
     {
@@ -133,6 +151,9 @@ abstract class EntityRepository
 
     /**
      * Delete entity by primary key.
+     *
+     * @param int $id The primary key of the entity to delete.
+     * @return int The number of affected rows (should be 1 for successful delete).
      */
     public function delete(int $id): int
     {
@@ -143,11 +164,11 @@ abstract class EntityRepository
     }
 
     /**
-     * Extract only properties annotated with #[Field] for persistence.
-     */
-    /**
      * Extract only properties annotated with #[Field] for persistence,
      * skipping uninitialized id on new entities.
+     *
+     * @param object $entity The entity instance to extract fields from.
+     * @return array<string, mixed> An associative array of field names and their values.
      */
     private function extractFields(object $entity): array
     {
