@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace MonkeysLegion\Query;
 
 use MonkeysLegion\Database\MySQL\Connection;
+use MonkeysLegion\Entity\Hydrator;
 use PDO;
 
 /**
@@ -321,15 +322,28 @@ final class QueryBuilder
      *
      * @param string $class The class name to instantiate for each row.
      * @return array An array of objects representing the rows.
+     * @throws \ReflectionException
      */
     public function fetchAll(string $class = 'stdClass'): array
     {
         $sql  = $this->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
         $stmt->execute($this->params);
-        $result = $stmt->fetchAll(PDO::FETCH_CLASS, $class);
+
+        // Retrieve raw rows as associative arrays
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $this->reset();
-        return $result;
+
+        // If an entity class is requested, hydrate strictly
+        if ($class !== 'stdClass' && class_exists($class)) {
+            return array_map(
+                fn(array $r) => Hydrator::hydrate($class, $r),
+                $rows
+            );
+        }
+
+        // Fallback: return raw associative rows
+        return $rows;
     }
 
     /**
@@ -337,15 +351,29 @@ final class QueryBuilder
      *
      * @param string $class The class name to instantiate for the row.
      * @return object|false An object representing the row, or false if no row was found.
+     * @throws \ReflectionException
      */
     public function fetch(string $class = 'stdClass'): object|false
     {
         $sql  = $this->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
         $stmt->execute($this->params);
-        $result = $stmt->fetchObject($class);
+
+        // Fetch raw row as associative array
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $this->reset();
-        return $result;
+
+        if (! $row) {
+            return false;
+        }
+
+        // If an entity class is requested, hydrate strictly
+        if ($class !== 'stdClass' && class_exists($class)) {
+            return Hydrator::hydrate($class, $row);
+        }
+
+        // Fallback: cast to object
+        return (object) $row;
     }
 
     /**
