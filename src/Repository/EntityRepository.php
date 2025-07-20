@@ -114,13 +114,21 @@ abstract class EntityRepository
         if (!empty($data['id'])) {
             $id = $data['id'];
             unset($data['id']);
-
             return $qb->update($this->table, $data)
                 ->where('id', '=', $id)
                 ->execute();
         }
 
-        return $qb->insert($this->table, $data);
+        $id = $qb->insert($this->table, $data);
+
+        // reflectively set id if property exists
+        if (property_exists($entity, 'id')) {
+            $ref = new \ReflectionProperty($entity, 'id');
+            $ref->setAccessible(true);
+            $ref->setValue($entity, $id);
+        }
+
+        return $id;
     }
 
     /**
