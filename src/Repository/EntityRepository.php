@@ -199,42 +199,43 @@ abstract class EntityRepository
     }
 
     /**
-     * Fetch entities in a MANY-TO-MANY relation.
+     * Find all entities where $relationProp (ManyToMany) contains $relatedId
      *
-     * @param string $relationProp The name of the property on the entity that has #[ManyToMany].
-     * @param int|string $value The value to match on the inverse column.
-     * @return object[]                          Hydrated entity objects.
+     * @param string       $relationProp  name of the property on the Entity marked #[ManyToMany]
+     * @param int|string   $relatedId     the ID in the inverse table
+     * @return object[]                   array of hydrated entities
      * @throws \ReflectionException
      */
-    public function findByRelation(string $relationProp, int|string $value): array
+    public function findByRelation(string $relationProp, int|string $relatedId): array
     {
-        $ref   = new ReflectionClass($this->entityClass);
-
-        if (! $ref->hasProperty($relationProp)) {
-            throw new InvalidArgumentException("Property {$relationProp} not found on {$this->entityClass}");
+        // 1) read the #[ManyToMany] metadata
+        $rclass = new ReflectionClass($this->entityClass);
+        if (! $rclass->hasProperty($relationProp)) {
+            throw new \InvalidArgumentException("No property $relationProp on {$this->entityClass}");
         }
-        $prop  = $ref->getProperty($relationProp);
+        $prop  = $rclass->getProperty($relationProp);
         $attrs = $prop->getAttributes(ManyToMany::class);
         if (! $attrs) {
-            throw new InvalidArgumentException("{$relationProp} is not a ManyToMany relation");
+            throw new \InvalidArgumentException("$relationProp is not a ManyToMany relation");
         }
-
         /** @var ManyToMany $rel */
-        $rel = $attrs[0]->newInstance();
-        $jt  = $rel->joinTable;            // instance of JoinTable
-        $jtName = $jt->name;               // e.g. "company_user"
-        $ownCol  = $jt->joinColumn;        // e.g. "company_id"
-        $invCol  = $jt->inverseColumn;     // e.g. "user_id"
+        $rel      = $attrs[0]->newInstance();
+        $jt       = $rel->joinTable;          // JoinTable instance
+        $joinTbl  = $jt->name;                // e.g. "company_user"
+        $joinCol  = $jt->joinColumn;          // e.g. "company_id"
+        $invCol   = $jt->inverseColumn;       // e.g. "user_id"
 
-        // alias for our entity table (first letter of table name)
-        $alias = substr($this->table, 0, 1);
-
-        return $this->qb
+        // 2) build the JOIN query
+        $alias   = 'e';
+        $qb      = clone $this->qb;
+        $results = $qb
             ->select(["{$alias}.*"])
             ->from($this->table, $alias)
-            ->join($jtName, 'j', "j.{$ownCol}", '=', "{$alias}.id")
-            ->where("j.{$invCol}", '=', $value)
+            ->join($joinTbl, 'j', "j.{$joinCol}", '=', "{$alias}.id")
+            ->where("j.{$invCol}", '=', $relatedId)
             ->fetchAll($this->entityClass);
+
+        return $results;
     }
 
     /**
