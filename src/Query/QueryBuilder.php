@@ -359,7 +359,7 @@ final class QueryBuilder
         $stmt = $this->conn->pdo()->prepare($sql);
         $stmt->execute($this->params);
 
-        // Fetch raw row as associative array
+        // Fetch raw row as an associative array
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $this->reset();
 
@@ -462,4 +462,15 @@ final class QueryBuilder
         $this->params  = [];
         $this->counter = 0;
     }
+
+    /**
+     * Get the current bound parameters for debugging.
+     *
+     * @return array<string,mixed>
+     */
+    public function getParams(): array
+    {
+        return $this->params;
+    }
+
 }
