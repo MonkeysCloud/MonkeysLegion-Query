@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace MonkeysLegion\Repository;
 
+use MonkeysLegion\Entity\Hydrator;
 use MonkeysLegion\Query\QueryBuilder;
 use MonkeysLegion\Entity\Attributes\Field;
 use ReflectionClass;
@@ -25,6 +26,7 @@ abstract class EntityRepository
     /**
      * Fetch all entities matching optional criteria.
      * @return object[]
+     * @throws \ReflectionException
      */
     public function findAll(array $criteria = []): array
     {
@@ -33,7 +35,11 @@ abstract class EntityRepository
         foreach ($criteria as $column => $value) {
             $qb->andWhere($column, '=', $value);
         }
-        return $qb->fetchAll($this->entityClass);
+        $rows = $qb->fetchAll();
+        return array_map(
+            fn($r) => Hydrator::hydrate($this->entityClass, $r),
+            $rows
+        );
     }
 
     /**
