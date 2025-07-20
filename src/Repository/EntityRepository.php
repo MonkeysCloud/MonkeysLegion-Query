@@ -236,4 +236,87 @@ abstract class EntityRepository
             ->where("j.{$invCol}", '=', $value)
             ->fetchAll($this->entityClass);
     }
+
+    /**
+     * Attach a many-to-many relation.
+     *
+     * @param object $entity The owning entity instance (must have an ->id).
+     * @param string $relationProp The property name on the entity that’s #[ManyToMany].
+     * @param int|string $value The ID of the related record to attach.
+     * @return int                      The number of affected rows (should be 1).
+     * @throws \ReflectionException
+     */
+    public function attachRelation(object $entity, string $relationProp, int|string $value): int
+    {
+        [$jtName, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
+
+        // grab this entity’s ID (reflectively)
+        $ref = new \ReflectionProperty($entity::class, 'id');
+        $ref->setAccessible(true);
+        $ownId = $ref->getValue($entity);
+        if (! $ownId) {
+            throw new InvalidArgumentException("Entity must have an ID before attaching relations");
+        }
+
+        return $this->qb
+            ->insert($jtName, [
+                $ownCol => $ownId,
+                $invCol => $value,
+            ]);
+    }
+
+    /**
+     * Detach a many-to-many relation.
+     *
+     * @param object $entity
+     * @param string $relationProp
+     * @param int|string $value
+     * @return int       Rows deleted (usually 1).
+     * @throws \ReflectionException
+     */
+    public function detachRelation(object $entity, string $relationProp, int|string $value): int
+    {
+        [$jtName, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
+
+        $ref = new \ReflectionProperty($entity::class, 'id');
+        $ref->setAccessible(true);
+        $ownId = $ref->getValue($entity);
+
+        return $this->qb
+            ->delete($jtName)
+            ->where($ownCol, '=', $ownId)
+            ->andWhere($invCol, '=', $value)
+            ->execute();
+    }
+
+    /**
+     * Internal helper to read #[ManyToMany(..., joinTable: new JoinTable(...))] metadata.
+     *
+     * @param string $relationProp
+     * @return array{0:string,1:string,2:string}  [ join_table, join_column, inverse_column ]
+     * @throws \ReflectionException
+     */
+    private function getJoinTableMeta(string $relationProp): array
+    {
+        $ref   = new ReflectionClass($this->entityClass);
+        if (! $ref->hasProperty($relationProp)) {
+            throw new InvalidArgumentException("Property {$relationProp} not found on {$this->entityClass}");
+        }
+
+        $prop  = $ref->getProperty($relationProp);
+        $attrs = $prop->getAttributes(ManyToMany::class);
+        if (! $attrs) {
+            throw new InvalidArgumentException("{$relationProp} is not a ManyToMany relation");
+        }
+
+        /** @var ManyToMany $rel */
+        $rel      = $attrs[0]->newInstance();
+        $jt       = $rel->joinTable;       // JoinTable instance
+        $table    = $jt->name;
+        $joinCol  = $jt->joinColumn;
+        $invCol   = $jt->inverseColumn;
+
+        return [$table, $joinCol, $invCol];
+    }
+
 }
