@@ -10,6 +10,7 @@ use MonkeysLegion\Entity\Hydrator;
 use MonkeysLegion\Query\QueryBuilder;
 use MonkeysLegion\Entity\Attributes\Field;
 use ReflectionClass;
+use ReflectionProperty;
 
 /**
  * Base repository with common CRUD and query methods.
@@ -303,21 +304,22 @@ abstract class EntityRepository
      */
     public function attachRelation(object $entity, string $relationProp, int|string $value): int
     {
-        [$jtName, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
+        // [0] = joinTable, [1] = ownCol, [2] = invCol
+        [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
 
-        // grab this entity’s ID (reflectively)
-        $ref = new \ReflectionProperty($entity::class, 'id');
+        // retrieve the ID of this entity
+        $ref = new ReflectionProperty($entity::class, 'id');
         $ref->setAccessible(true);
         $ownId = $ref->getValue($entity);
+
         if (! $ownId) {
             throw new InvalidArgumentException("Entity must have an ID before attaching relations");
         }
 
-        return $this->qb
-            ->insert($jtName, [
-                $ownCol => $ownId,
-                $invCol => $value,
-            ]);
+        return $this->qb->insert($table, [
+            $ownCol => $ownId,
+            $invCol => $value,
+        ]);
     }
 
     /**
@@ -331,14 +333,14 @@ abstract class EntityRepository
      */
     public function detachRelation(object $entity, string $relationProp, int|string $value): int
     {
-        [$jtName, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
+        [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
 
-        $ref = new \ReflectionProperty($entity::class, 'id');
+        $ref = new ReflectionProperty($entity::class, 'id');
         $ref->setAccessible(true);
         $ownId = $ref->getValue($entity);
 
         return $this->qb
-            ->delete($jtName)
+            ->delete($table)
             ->where($ownCol, '=', $ownId)
             ->andWhere($invCol, '=', $value)
             ->execute();
@@ -353,25 +355,63 @@ abstract class EntityRepository
      */
     private function getJoinTableMeta(string $relationProp): array
     {
-        $ref   = new ReflectionClass($this->entityClass);
-        if (! $ref->hasProperty($relationProp)) {
+        $ownClass = new ReflectionClass($this->entityClass);
+
+        if (! $ownClass->hasProperty($relationProp)) {
             throw new InvalidArgumentException("Property {$relationProp} not found on {$this->entityClass}");
         }
 
-        $prop  = $ref->getProperty($relationProp);
+        $prop  = $ownClass->getProperty($relationProp);
         $attrs = $prop->getAttributes(ManyToMany::class);
+
         if (! $attrs) {
             throw new InvalidArgumentException("{$relationProp} is not a ManyToMany relation");
         }
 
-        /** @var ManyToMany $rel */
-        $rel      = $attrs[0]->newInstance();
-        $jt       = $rel->joinTable;       // JoinTable instance
-        $table    = $jt->name;
-        $joinCol  = $jt->joinColumn;
-        $invCol   = $jt->inverseColumn;
+        /** @var ManyToMany $meta */
+        $meta = $attrs[0]->newInstance();
+        $jt   = $meta->joinTable;
+        $owning = true;
 
-        return [$table, $joinCol, $invCol];
+        // if no joinTable here, follow mappedBy/inversedBy to other side
+        if (! $jt) {
+            $owning = false;
+            $otherProp = $meta->mappedBy ?? $meta->inversedBy
+                ?? throw new InvalidArgumentException(
+                    "Relation {$relationProp} has no joinTable or mappedBy/inversedBy"
+                );
+
+            $otherClass = new ReflectionClass($meta->targetEntity);
+            if (! $otherClass->hasProperty($otherProp)) {
+                throw new InvalidArgumentException("Property {$otherProp} not found on {$meta->targetEntity}");
+            }
+
+            $otherAttrs = $otherClass->getProperty($otherProp)
+                ->getAttributes(ManyToMany::class);
+
+            if (! $otherAttrs) {
+                throw new InvalidArgumentException("{$otherProp} is not a ManyToMany relation on {$meta->targetEntity}");
+            }
+
+            /** @var ManyToMany $ownerMeta */
+            $ownerMeta = $otherAttrs[0]->newInstance();
+            $jt = $ownerMeta->joinTable
+                ?? throw new InvalidArgumentException(
+                    "Neither {$relationProp} nor {$otherProp} carry joinTable metadata"
+                );
+        }
+
+        // determine which column belongs to this entity (ownCol) vs. the related (invCol)
+        if ($owning) {
+            $ownCol = $jt->joinColumn;
+            $invCol = $jt->inverseColumn;
+        } else {
+            // swap columns when using other side's joinTable
+            $ownCol = $jt->inverseColumn;
+            $invCol = $jt->joinColumn;
+        }
+
+        return [$jt->name, $ownCol, $invCol];
     }
 
 }
