@@ -130,7 +130,30 @@ abstract class EntityRepository
     public function save(object $entity): int
     {
         $data = $this->extractFields($entity);
-        $qb   = clone $this->qb;
+
+        // 1) Normalize each PHP value based on its type
+        foreach ($data as $key => $value) {
+            // Date/time
+            if ($value instanceof \DateTimeInterface) {
+                // decide format by column name or metadata
+                $data[$key] = $value->format('Y-m-d H:i:s');
+            }
+            // JSON-capable
+            elseif (is_array($value)) {
+                // you could inspect your FieldAttr to decide simple_array vs json
+                $data[$key] = json_encode($value);
+            }
+            // boolean
+            elseif (is_bool($value)) {
+                $data[$key] = $value ? 1 : 0;
+            }
+            // decimal: cast floats to string
+            elseif (is_float($value)) {
+                $data[$key] = (string)$value;
+            }
+        }
+
+        $qb = clone $this->qb;
 
         if (!empty($data['id'])) {
             $id = $data['id'];
@@ -142,7 +165,6 @@ abstract class EntityRepository
 
         $id = $qb->insert($this->table, $data);
 
-        // reflectively set id if property exists
         if (property_exists($entity, 'id')) {
             $ref = new \ReflectionProperty($entity, 'id');
             $ref->setAccessible(true);
