@@ -473,4 +473,20 @@ final class QueryBuilder
         return $this->params;
     }
 
+    /**
+     * Expose the underlying PDO so low-level operations can be performed.
+     */
+    public function pdo(): \PDO
+    {
+        return $this->conn->pdo();
+    }
+
+    /**
+     * (Optional) If you prefer exposing the Connection:
+     */
+    public function connection(): Connection
+    {
+        return $this->conn;
+    }
+
 }

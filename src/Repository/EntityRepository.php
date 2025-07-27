@@ -131,40 +131,71 @@ abstract class EntityRepository
     {
         $data = $this->extractFields($entity);
 
-        // 1) Normalize each PHP value based on its type
+        // ---- Normalize PHP values → DB scalars ---------------------------------
         foreach ($data as $key => $value) {
-            // Date/time
             if ($value instanceof \DateTimeInterface) {
-                // decide format by column name or metadata
                 $data[$key] = $value->format('Y-m-d H:i:s');
-            }
-            // JSON-capable
-            elseif (is_array($value)) {
-                // you could inspect your FieldAttr to decide simple_array vs json
-                $data[$key] = json_encode($value);
-            }
-            // boolean
-            elseif (is_bool($value)) {
+            } elseif (is_bool($value)) {
                 $data[$key] = $value ? 1 : 0;
-            }
-            // decimal: cast floats to string
-            elseif (is_float($value)) {
-                $data[$key] = (string)$value;
+            } elseif (is_float($value)) {
+                $data[$key] = (string)$value;            // keep precision for DECIMAL
+            } elseif (is_array($value)) {
+                $data[$key] = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
             }
         }
 
-        $qb = clone $this->qb;
+        $pdo = $this->qb->pdo();   // QueryBuilder should expose the PDO. If your class
 
+        // UPDATE path
         if (!empty($data['id'])) {
-            $id = $data['id'];
+            $id = (int)$data['id'];
             unset($data['id']);
-            return $qb->update($this->table, $data)
-                ->where('id', '=', $id)
-                ->execute();
+
+            if (empty($data)) {
+                return 0; // nothing to update
+            }
+
+            // build: UPDATE `table` SET `col` = :col, ... WHERE id = :_id
+            $setParts = [];
+            foreach ($data as $col => $_) {
+                $setParts[] = "`{$col}` = :{$col}";
+            }
+            $sql = "UPDATE `{$this->table}` SET " . implode(', ', $setParts) . " WHERE `id` = :_id";
+
+            $stmt = $pdo->prepare($sql);
+
+            // bind SET values
+            foreach ($data as $col => $val) {
+                $stmt->bindValue(":{$col}", $val);
+            }
+            // bind WHERE id
+            $stmt->bindValue(":_id", $id, \PDO::PARAM_INT);
+
+            $stmt->execute();
+            return $stmt->rowCount();
         }
 
-        $id = $qb->insert($this->table, $data);
+        // INSERT path
+        // build: INSERT INTO `table` (`c1`,`c2`,...) VALUES (:c1,:c2,...)
+        $cols        = array_keys($data);
+        $placeholders = array_map(fn($c) => ':' . $c, $cols);
 
+        $sql = sprintf(
+            "INSERT INTO `%s` (%s) VALUES (%s)",
+            $this->table,
+            implode(',', array_map(fn($c) => "`{$c}`", $cols)),
+            implode(',', $placeholders)
+        );
+
+        $stmt = $pdo->prepare($sql);
+        foreach ($data as $col => $val) {
+            $stmt->bindValue(":{$col}", $val);
+        }
+        $stmt->execute();
+
+        $id = (int)$pdo->lastInsertId();
+
+        // reflectively set id if property exists
         if (property_exists($entity, 'id')) {
             $ref = new \ReflectionProperty($entity, 'id');
             $ref->setAccessible(true);
