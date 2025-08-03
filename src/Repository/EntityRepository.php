@@ -1,11 +1,13 @@
 <?php
-
 declare(strict_types=1);
 
 namespace MonkeysLegion\Repository;
 
 use InvalidArgumentException;
 use MonkeysLegion\Entity\Attributes\ManyToMany;
+use MonkeysLegion\Entity\Attributes\ManyToOne;
+use MonkeysLegion\Entity\Attributes\OneToMany;
+use MonkeysLegion\Entity\Attributes\OneToOne;
 use MonkeysLegion\Entity\Hydrator;
 use MonkeysLegion\Query\QueryBuilder;
 use MonkeysLegion\Entity\Attributes\Field;
@@ -129,7 +131,7 @@ abstract class EntityRepository
      */
     public function save(object $entity): int
     {
-        $data = $this->extractFields($entity);
+        $data = $this->extractPersistableData($entity);
 
         // ---- Normalize PHP values → DB scalars ---------------------------------
         foreach ($data as $key => $value) {
@@ -220,9 +222,100 @@ abstract class EntityRepository
     }
 
     /**
+     * Extract persistable data including Field properties and ManyToOne relationships.
+     *
+     * @param object $entity The entity instance to extract data from.
+     * @return array<string, mixed> An associative array of column names and their values.
+     */
+    private function extractPersistableData(object $entity): array
+    {
+        $data = [];
+        $ref  = new ReflectionClass($entity);
+
+        foreach ($ref->getProperties() as $prop) {
+            // Handle Field attributes
+            if ($prop->getAttributes(Field::class)) {
+                // Skip uninitialized id on insert
+                if ($prop->getName() === 'id' && ! $prop->isInitialized($entity)) {
+                    continue;
+                }
+
+                if ($prop->isPrivate() || $prop->isProtected()) {
+                    $prop->setAccessible(true);
+                }
+
+                $data[$prop->getName()] = $prop->getValue($entity);
+            }
+
+            // Handle ManyToOne relationships
+            $manyToOneAttrs = $prop->getAttributes(ManyToOne::class);
+            if ($manyToOneAttrs) {
+                if ($prop->isPrivate() || $prop->isProtected()) {
+                    $prop->setAccessible(true);
+                }
+
+                $relatedEntity = $prop->getValue($entity);
+                $columnName = $this->getRelationColumnName($prop->getName());
+
+                if ($relatedEntity === null) {
+                    $data[$columnName] = null;
+                } else {
+                    // Get the ID of the related entity
+                    $idProp = new ReflectionProperty($relatedEntity, 'id');
+                    $idProp->setAccessible(true);
+                    $data[$columnName] = $idProp->getValue($relatedEntity);
+                }
+            }
+
+            // Handle OneToOne relationships (owning side)
+            $oneToOneAttrs = $prop->getAttributes(OneToOne::class);
+            if ($oneToOneAttrs) {
+                /** @var OneToOne $attr */
+                $attr = $oneToOneAttrs[0]->newInstance();
+
+                // Only persist if this is the owning side (no mappedBy)
+                if ($attr->mappedBy === null) {
+                    if ($prop->isPrivate() || $prop->isProtected()) {
+                        $prop->setAccessible(true);
+                    }
+
+                    $relatedEntity = $prop->getValue($entity);
+                    $columnName = $this->getRelationColumnName($prop->getName());
+
+                    if ($relatedEntity === null) {
+                        $data[$columnName] = null;
+                    } else {
+                        // Get the ID of the related entity
+                        $idProp = new ReflectionProperty($relatedEntity, 'id');
+                        $idProp->setAccessible(true);
+                        $data[$columnName] = $idProp->getValue($relatedEntity);
+                    }
+                }
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Get the database column name for a relation property.
+     * Converts camelCase to snake_case and appends _id.
+     *
+     * @param string $propertyName The property name (e.g., 'media', 'parentCategory')
+     * @return string The column name (e.g., 'media_id', 'parent_category_id')
+     */
+    private function getRelationColumnName(string $propertyName): string
+    {
+        // Convert camelCase to snake_case
+        $snakeCase = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $propertyName));
+        return $snakeCase . '_id';
+    }
+
+    /**
      * Extract only properties annotated with #[Field] for persistence,
      * skipping uninitialized id on new entities.
      *
+     * @deprecated Use extractPersistableData() instead
      * @param object $entity The entity instance to extract fields from.
      * @return array<string, mixed> An associative array of field names and their values.
      */
@@ -350,7 +443,7 @@ abstract class EntityRepository
      * Attach a many-to-many relation.
      *
      * @param object $entity The owning entity instance (must have an ->id).
-     * @param string $relationProp The property name on the entity that’s #[ManyToMany].
+     * @param string $relationProp The property name on the entity that's #[ManyToMany].
      * @param int|string $value The ID of the related record to attach.
      * @return int                      The number of affected rows (should be 1).
      * @throws \ReflectionException
