@@ -32,10 +32,11 @@ abstract class EntityRepository
      * Fetch all entities matching optional criteria.
      *
      * @param array<string,mixed> $criteria
+     * @param bool $loadRelations Whether to load relationships (default: true)
      * @return object[]
      * @throws \ReflectionException
      */
-    public function findAll(array $criteria = []): array
+    public function findAll(array $criteria = [], bool $loadRelations = true): array
     {
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
@@ -43,26 +44,40 @@ abstract class EntityRepository
             $qb->andWhere($column, '=', $value);
         }
         $rows = $qb->fetchAll();
-        return array_map(
+        $entities = array_map(
             fn($r) => Hydrator::hydrate($this->entityClass, $r),
             $rows
         );
+
+        if ($loadRelations) {
+            foreach ($entities as $entity) {
+                $this->loadRelations($entity);
+            }
+        }
+
+        return $entities;
     }
 
     /**
      * Find a single entity by primary key.
      *
      * @param int $id The primary key of the entity to find.
+     * @param bool $loadRelations Whether to load relationships (default: true)
      * @return object|null The found entity or null if not found.
      * @throws \ReflectionException
      */
-    public function find(int $id): ?object
+    public function find(int $id, bool $loadRelations = true): ?object
     {
         $qb = clone $this->qb;
         $entity = $qb->select()
             ->from($this->table)
             ->where('id', '=', $id)
             ->fetch($this->entityClass);
+
+        if ($entity && $loadRelations) {
+            $this->loadRelations($entity);
+        }
+
         return $entity ?: null;
     }
 
@@ -71,6 +86,7 @@ abstract class EntityRepository
      *
      * @param array<string,mixed> $criteria
      * @param array<string,string> $orderBy  column => direction
+     * @param bool $loadRelations Whether to load relationships (default: true)
      * @return object[]
      * @throws \ReflectionException
      */
@@ -78,7 +94,8 @@ abstract class EntityRepository
         array $criteria,
         array $orderBy = [],
         int|null $limit = null,
-        int|null $offset = null
+        int|null $offset = null,
+        bool $loadRelations = true
     ): array {
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
@@ -90,18 +107,28 @@ abstract class EntityRepository
         }
         if ($limit !== null)  $qb->limit($limit);
         if ($offset !== null) $qb->offset($offset);
-        return $qb->fetchAll($this->entityClass);
+
+        $entities = $qb->fetchAll($this->entityClass);
+
+        if ($loadRelations) {
+            foreach ($entities as $entity) {
+                $this->loadRelations($entity);
+            }
+        }
+
+        return $entities;
     }
 
     /**
      * Find a single entity by arbitrary criteria.
      *
      * @param array<string,mixed> $criteria
+     * @param bool $loadRelations Whether to load relationships (default: true)
      * @return object|null The found entity or null if not found.
      */
-    public function findOneBy(array $criteria): ?object
+    public function findOneBy(array $criteria, bool $loadRelations = true): ?object
     {
-        $results = $this->findBy($criteria, [], 1);
+        $results = $this->findBy($criteria, [], 1, null, $loadRelations);
         return $results[0] ?? null;
     }
 
@@ -558,6 +585,224 @@ abstract class EntityRepository
         }
 
         return [$jt->name, $ownCol, $invCol];
+    }
+
+    /**
+     * Load all relationships for an entity.
+     *
+     * @param object $entity The entity to load relationships for
+     * @throws \ReflectionException
+     */
+    protected function loadRelations(object $entity): void
+    {
+        $ref = new ReflectionClass($entity);
+
+        foreach ($ref->getProperties() as $prop) {
+            // Handle ManyToOne relationships
+            if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
+                /** @var ManyToOne $attr */
+                $attr = $manyToOneAttrs[0]->newInstance();
+                $this->loadManyToOne($entity, $prop, $attr);
+            }
+
+            // Handle OneToOne relationships (owning side)
+            if ($oneToOneAttrs = $prop->getAttributes(OneToOne::class)) {
+                /** @var OneToOne $attr */
+                $attr = $oneToOneAttrs[0]->newInstance();
+                if (!$attr->mappedBy) { // Only load if we're the owning side
+                    $this->loadOneToOne($entity, $prop, $attr);
+                }
+            }
+
+            // Handle OneToMany relationships
+            if ($oneToManyAttrs = $prop->getAttributes(OneToMany::class)) {
+                /** @var OneToMany $attr */
+                $attr = $oneToManyAttrs[0]->newInstance();
+                $this->loadOneToMany($entity, $prop, $attr);
+            }
+
+            // Handle ManyToMany relationships
+            if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
+                /** @var ManyToMany $attr */
+                $attr = $manyToManyAttrs[0]->newInstance();
+                $this->loadManyToMany($entity, $prop, $attr);
+            }
+        }
+    }
+
+    /**
+     * Load a ManyToOne relationship.
+     */
+    private function loadManyToOne(object $entity, ReflectionProperty $prop, ManyToOne $attr): void
+    {
+        $prop->setAccessible(true);
+
+        // Get the foreign key column name
+        $fkColumn = $this->getRelationColumnName($prop->getName());
+
+        // Get the foreign key value from the entity
+        $ref = new ReflectionClass($entity);
+        $data = [];
+        foreach ($ref->getProperties() as $p) {
+            if ($p->getAttributes(Field::class) && $p->isInitialized($entity)) {
+                $p->setAccessible(true);
+                $data[$p->getName()] = $p->getValue($entity);
+            }
+        }
+
+        // Check if we have the FK value in the database row data
+        // We need to query for it
+        $entityId = $data['id'] ?? null;
+        if (!$entityId) {
+            return;
+        }
+
+        $qb = clone $this->qb;
+        $row = $qb->select([$fkColumn])
+            ->from($this->table)
+            ->where('id', '=', $entityId)
+            ->fetch();
+
+        $fkValue = $row ? ($row->$fkColumn ?? null) : null;
+
+        if ($fkValue === null) {
+            $prop->setValue($entity, null);
+            return;
+        }
+
+        // Load the related entity
+        $targetTable = $this->snake($attr->targetEntity);
+        $relatedEntity = $qb->select()
+            ->from($targetTable)
+            ->where('id', '=', $fkValue)
+            ->fetch($attr->targetEntity);
+
+        $prop->setValue($entity, $relatedEntity ?: null);
+    }
+
+    /**
+     * Load a OneToOne relationship.
+     */
+    private function loadOneToOne(object $entity, ReflectionProperty $prop, OneToOne $attr): void
+    {
+        // Same as ManyToOne for owning side
+        $this->loadManyToOne($entity, $prop, new ManyToOne(
+            targetEntity: $attr->targetEntity,
+            inversedBy: $attr->inversedBy,
+            nullable: $attr->nullable
+        ));
+    }
+
+    /**
+     * Load a OneToMany relationship.
+     */
+    private function loadOneToMany(object $entity, ReflectionProperty $prop, OneToMany $attr): void
+    {
+        $prop->setAccessible(true);
+        $entityId = $this->getEntityId($entity);
+
+        if (!$entityId) {
+            $prop->setValue($entity, []);
+            return;
+        }
+
+        // Find the FK column in the target entity
+        $targetRef = new ReflectionClass($attr->targetEntity);
+        $fkColumn = null;
+
+        // Look for the inverse ManyToOne property
+        if ($attr->mappedBy) {
+            if ($targetRef->hasProperty($attr->mappedBy)) {
+                $fkColumn = $this->getRelationColumnName($attr->mappedBy);
+            }
+        }
+
+        if (!$fkColumn) {
+            $prop->setValue($entity, []);
+            return;
+        }
+
+        $targetTable = $this->snake($attr->targetEntity);
+        $qb = clone $this->qb;
+        $related = $qb->select()
+            ->from($targetTable)
+            ->where($fkColumn, '=', $entityId)
+            ->fetchAll($attr->targetEntity);
+
+        $prop->setValue($entity, $related);
+    }
+
+    /**
+     * Load a ManyToMany relationship.
+     */
+    private function loadManyToMany(object $entity, ReflectionProperty $prop, ManyToMany $attr): void
+    {
+        $prop->setAccessible(true);
+        $entityId = $this->getEntityId($entity);
+
+        if (!$entityId) {
+            $prop->setValue($entity, []);
+            return;
+        }
+
+        // Use existing findByRelation method
+        try {
+            $related = $this->findByRelation($prop->getName(), $entityId);
+            // But we need to fetch from the target entity's table
+            $targetTable = $this->snake($attr->targetEntity);
+
+            // Get join table info
+            [$jtName, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
+
+            $qb = clone $this->qb;
+            $results = $qb->select(['t.*'])
+                ->from($targetTable, 't')
+                ->join($jtName, 'j', "j.{$invCol}", '=', 't.id')
+                ->where("j.{$ownCol}", '=', $entityId)
+                ->fetchAll($attr->targetEntity);
+
+            $prop->setValue($entity, $results);
+        } catch (\Exception $e) {
+            $prop->setValue($entity, []);
+        }
+    }
+
+    /**
+     * Get entity ID value.
+     */
+    private function getEntityId(object $entity): ?int
+    {
+        if (property_exists($entity, 'id')) {
+            $idProp = new ReflectionProperty($entity, 'id');
+            $idProp->setAccessible(true);
+            return $idProp->isInitialized($entity) ? $idProp->getValue($entity) : null;
+        }
+        return null;
+    }
+
+    /**
+     * Convert a class name or camelCase string to snake_case.
+     *
+     * Examples:
+     *   App\Entity\User  -> "user"
+     *   BlogPost         -> "blog_post"
+     *   blogPost         -> "blog_post"
+     *
+     * @param string $input FQCN or plain string
+     * @return string
+     * @throws \ReflectionException
+     */
+    protected function snake(string $input): string
+    {
+        // If we get a FQCN, keep only the short class name
+        if (str_contains($input, '\\')) {
+            $input = new \ReflectionClass($input)->getShortName();
+        }
+
+        // Insert underscores before capitals, then lowercase
+        $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $input));
+
+        return $snake;
     }
 
 }
