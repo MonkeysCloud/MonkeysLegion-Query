@@ -26,7 +26,7 @@ abstract class EntityRepository
     protected string $table;
     protected string $entityClass;
 
-    public function __construct(protected QueryBuilder $qb) {}
+    public function __construct(public QueryBuilder $qb) {}
 
     /**
      * Fetch all entities matching optional criteria.
@@ -132,8 +132,7 @@ abstract class EntityRepository
             $results = $this->findBy($criteria, [], 1, null, $loadRelations);
             return $results[0] ?? null;
         } catch (\Throwable $e) {
-            error_log('[Repository] '.$e->getMessage());
-            throw $e;          // re-throw so you still get a 500 if it’s fatal
+            throw $e;
         }
     }
 
@@ -239,18 +238,51 @@ abstract class EntityRepository
         return $id;
     }
 
+
     /**
      * Delete entity by primary key.
      *
-     * @param int $id The primary key of the entity to delete.
+     * @param int|object $idOrEntity The primary key of the entity to delete or entity instance.
      * @return int The number of affected rows (should be 1 for successful delete).
      */
-    public function delete(int $id): int
+    public function delete(int|object $idOrEntity): int
     {
-        $qb = clone $this->qb;
-        return $qb->delete($this->table)
-            ->where('id', '=', $id)
-            ->execute();
+        // Extract ID from entity or use provided ID
+        if (is_object($idOrEntity)) {
+            if (!property_exists($idOrEntity, 'id')) {
+                throw new InvalidArgumentException('Entity has no id property');
+            }
+            $rp = new ReflectionProperty($idOrEntity, 'id');
+            $rp->setAccessible(true);
+            $id = (int) $rp->getValue($idOrEntity);
+        } else {
+            $id = $idOrEntity;
+        }
+
+        if ($id <= 0) {
+            throw new InvalidArgumentException('Invalid ID for deletion');
+        }
+
+        // Check if entity exists before deletion
+        $existing = $this->find($id, false); // Don't load relations for performance
+        if (!$existing) {
+            return 0;
+        }
+
+        try {
+            // ① wipe / null related rows first
+            $this->cascadeDeleteRelations($id);
+
+            // ② hard-delete the entity with plain PDO
+            $pdo = $this->qb->pdo();
+            $sql = "DELETE FROM `{$this->table}` WHERE `id` = ? LIMIT 1";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$id]);
+            return $stmt->rowCount();
+
+        } catch (\Throwable $e) {
+            throw $e;
+        }
     }
 
     /**
@@ -258,6 +290,7 @@ abstract class EntityRepository
      *
      * @param object $entity The entity instance to extract data from.
      * @return array<string, mixed> An associative array of column names and their values.
+     * @throws \ReflectionException
      */
     private function extractPersistableData(object $entity): array
     {
@@ -645,23 +678,14 @@ abstract class EntityRepository
         // Get the foreign key column name
         $fkColumn = $this->getRelationColumnName($prop->getName());
 
-        // Get the foreign key value from the entity
-        $ref = new ReflectionClass($entity);
-        $data = [];
-        foreach ($ref->getProperties() as $p) {
-            if ($p->getAttributes(Field::class) && $p->isInitialized($entity)) {
-                $p->setAccessible(true);
-                $data[$p->getName()] = $p->getValue($entity);
-            }
-        }
-
-        // Check if we have the FK value in the database row data
-        // We need to query for it
-        $entityId = $data['id'] ?? null;
+        // Get the entity ID first
+        $entityId = $this->getEntityId($entity);
         if (!$entityId) {
+            $prop->setValue($entity, null);
             return;
         }
 
+        // Query for the FK value
         $qb = clone $this->qb;
         $row = $qb->select([$fkColumn])
             ->from($this->table)
@@ -677,7 +701,8 @@ abstract class EntityRepository
 
         // Load the related entity
         $targetTable = $this->tableOf($attr->targetEntity);
-        $relatedEntity = $qb->select()
+        $qb2 = clone $this->qb;
+        $relatedEntity = $qb2->select()
             ->from($targetTable)
             ->where('id', '=', $fkValue)
             ->fetch($attr->targetEntity);
@@ -838,6 +863,92 @@ abstract class EntityRepository
 
         // ③ fallback rule (lower-case short name)
         return strtolower(new \ReflectionClass($entityClass)->getShortName());
+    }
+
+    /**
+     * Deletes or nulls every FK that references $id.
+     *
+     *  • Many-to-Many  → delete rows from the join-table where either column
+     *                    equals $id
+     *  • One-to-Many   → set the FK on the child records to NULL
+     *  • One-to-One    → same — only on the *inverse* side (mappedBy)
+     *  • Many-to-One   → no action required (FK sits on the row we're deleting)
+     */
+    private function cascadeDeleteRelations(int $id): void
+    {
+        $rc = new \ReflectionClass($this->entityClass);
+        $pdo = $this->qb->pdo();
+
+        foreach ($rc->getProperties() as $prop) {
+            $propName = $prop->getName();
+
+            /*────────── Many-to-Many ──────────*/
+            if ($prop->getAttributes(ManyToMany::class)) {
+                try {
+                    [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
+
+                    // Use raw PDO for better control
+                    $sql = "DELETE FROM `{$jt}` WHERE `{$ownCol}` = ? OR `{$invCol}` = ?";
+
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute([$id, $id]);
+                    $affected = $stmt->rowCount();
+
+                } catch (\Throwable $e) {
+                }
+            }
+
+            /*────────── One-to-Many ───────────*/
+            if ($o2m = $prop->getAttributes(OneToMany::class)) {
+                try {
+                    /** @var OneToMany $meta */
+                    $meta = $o2m[0]->newInstance();
+                    if (!$meta->mappedBy) {
+                        continue;
+                    }
+
+                    $fk  = $this->getRelationColumnName($meta->mappedBy);
+                    $tbl = $this->tableOf($meta->targetEntity);
+
+                    // Use raw PDO to set FK to NULL
+                    $sql = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
+
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute([$id]);
+
+                } catch (\Throwable $e) {
+                    throw new \RuntimeException(
+                        "Failed to cascade delete for OneToMany relation '$propName': " . $e->getMessage(),
+                        0, $e
+                    );
+                }
+            }
+
+            /*──────── One-to-One (inverse) ─────*/
+            if ($o2o = $prop->getAttributes(OneToOne::class)) {
+                try {
+                    /** @var OneToOne $meta */
+                    $meta = $o2o[0]->newInstance();
+                    if ($meta->mappedBy) {
+                        $fk  = $this->getRelationColumnName($meta->mappedBy);
+                        $tbl = $this->tableOf($meta->targetEntity);
+
+                        // Use raw PDO to set FK to NULL
+                        $sql = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
+
+                        $stmt = $pdo->prepare($sql);
+                        $stmt->execute([$id]);
+                    } else {
+                        error_log("[Repository] Skipping O2O relation '$propName' - owning side");
+                    }
+                } catch (\Throwable $e) {
+                    throw new \RuntimeException(
+                        "Failed to cascade delete for OneToOne relation '$propName': " . $e->getMessage(),
+                        0, $e
+                    );
+                }
+            }
+        }
     }
 
 }
