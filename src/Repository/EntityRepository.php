@@ -128,8 +128,13 @@ abstract class EntityRepository
      */
     public function findOneBy(array $criteria, bool $loadRelations = true): ?object
     {
-        $results = $this->findBy($criteria, [], 1, null, $loadRelations);
-        return $results[0] ?? null;
+        try {
+            $results = $this->findBy($criteria, [], 1, null, $loadRelations);
+            return $results[0] ?? null;
+        } catch (\Throwable $e) {
+            error_log('[Repository] '.$e->getMessage());
+            throw $e;          // re-throw so you still get a 500 if it’s fatal
+        }
     }
 
     /**
@@ -671,7 +676,7 @@ abstract class EntityRepository
         }
 
         // Load the related entity
-        $targetTable = $this->snake($attr->targetEntity);
+        $targetTable = $this->tableOf($attr->targetEntity);
         $relatedEntity = $qb->select()
             ->from($targetTable)
             ->where('id', '=', $fkValue)
@@ -722,7 +727,7 @@ abstract class EntityRepository
             return;
         }
 
-        $targetTable = $this->snake($attr->targetEntity);
+        $targetTable = $this->tableOf($attr->targetEntity);
         $qb = clone $this->qb;
         $related = $qb->select()
             ->from($targetTable)
@@ -733,38 +738,41 @@ abstract class EntityRepository
     }
 
     /**
-     * Load a ManyToMany relationship.
+     * Load a ManyToMany relationship and hydrate the target entities.
+     *
+     * @param object              $entity The owner/inverse entity
+     * @param ReflectionProperty  $prop   The property carrying #[ManyToMany]
+     * @param ManyToMany          $attr   The attribute metadata
      */
-    private function loadManyToMany(object $entity, ReflectionProperty $prop, ManyToMany $attr): void
+    private function loadManyToMany(
+        object             $entity,
+        ReflectionProperty $prop,
+        ManyToMany         $attr
+    ): void
     {
         $prop->setAccessible(true);
-        $entityId = $this->getEntityId($entity);
 
-        if (!$entityId) {
+        // ── If the entity hasn’t been persisted yet, nothing to load ────────────
+        $ownId = $this->getEntityId($entity);
+        if (!$ownId) {
             $prop->setValue($entity, []);
             return;
         }
 
-        // Use existing findByRelation method
-        try {
-            $related = $this->findByRelation($prop->getName(), $entityId);
-            // But we need to fetch from the target entity's table
-            $targetTable = $this->snake($attr->targetEntity);
+        // ── Resolve join-table + the two FK columns this ↔ related ──────────────
+        [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
 
-            // Get join table info
-            [$jtName, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
+        // ── Target table (snake-case of the related class name) ─────────────────
+        $targetTable = $this->tableOf($attr->targetEntity);
 
-            $qb = clone $this->qb;
-            $results = $qb->select(['t.*'])
-                ->from($targetTable, 't')
-                ->join($jtName, 'j', "j.{$invCol}", '=', 't.id')
-                ->where("j.{$ownCol}", '=', $entityId)
-                ->fetchAll($attr->targetEntity);
+        $qb = clone $this->qb;
+        $rows = $qb->select(['t.*'])
+            ->from($targetTable, 't')
+            ->join($jt, 'j', "j.$invCol", '=', 't.id')   // j.user_id = t.id  (or the inverse)
+            ->where("j.$ownCol", '=', $ownId)            // j.company_id = {$company->id}
+            ->fetchAll($attr->targetEntity);
 
-            $prop->setValue($entity, $results);
-        } catch (\Exception $e) {
-            $prop->setValue($entity, []);
-        }
+        $prop->setValue($entity, $rows);
     }
 
     /**
@@ -803,6 +811,33 @@ abstract class EntityRepository
         $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $input));
 
         return $snake;
+    }
+
+    /**
+     * @throws \ReflectionException
+     */
+    protected function tableOf(string $entityClass): string
+    {
+        // ① explicit constant on the entity
+        if (defined("$entityClass::TABLE")) {
+            return $entityClass::TABLE;
+        }
+
+        // ② `$table` default on the repository stub
+        $repoClass = str_replace('\\Entity\\', '\\Repository\\', $entityClass) . 'Repository';
+        if (class_exists($repoClass)) {
+            $rc = new \ReflectionClass($repoClass);
+            if ($rc->hasProperty('table')) {
+                // read the *default* value without building an object
+                $defaults = $rc->getDefaultProperties();      // PHP ≥7.4
+                if (!empty($defaults['table'])) {
+                    return (string) $defaults['table'];
+                }
+            }
+        }
+
+        // ③ fallback rule (lower-case short name)
+        return strtolower(new \ReflectionClass($entityClass)->getShortName());
     }
 
 }
