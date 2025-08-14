@@ -25,6 +25,7 @@ abstract class EntityRepository
 {
     protected string $table;
     protected string $entityClass;
+    protected array $columnMap = [];
 
     public function __construct(public QueryBuilder $qb) {}
 
@@ -40,6 +41,7 @@ abstract class EntityRepository
     {
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
+        $criteria = $this->normalizeCriteria($criteria);
         foreach ($criteria as $column => $value) {
             $qb->andWhere($column, '=', $value);
         }
@@ -66,8 +68,17 @@ abstract class EntityRepository
      * @return object|null The found entity or null if not found.
      * @throws \ReflectionException
      */
-    public function find(int $id, bool $loadRelations = true): ?object
+    public function find(int|object $idOrEntity, bool $loadRelations = true): ?object
     {
+        // ☞ accept entity or id
+        if (is_object($idOrEntity)) {
+            $rp = new \ReflectionProperty($idOrEntity, 'id');
+            $rp->setAccessible(true);
+            $id = (int) $rp->getValue($idOrEntity);
+        } else {
+            $id = (int) $idOrEntity;
+        }
+
         $qb = clone $this->qb;
         $entity = $qb->select()
             ->from($this->table)
@@ -77,7 +88,6 @@ abstract class EntityRepository
         if ($entity && $loadRelations) {
             $this->loadRelations($entity);
         }
-
         return $entity ?: null;
     }
 
@@ -99,23 +109,21 @@ abstract class EntityRepository
     ): array {
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
+
+        $criteria = $this->normalizeCriteria($criteria);
         foreach ($criteria as $column => $value) {
             $qb->andWhere($column, '=', $value);
         }
         foreach ($orderBy as $column => $dir) {
-            $qb->orderBy($column, $dir);
+            $qb->orderBy($this->normalizeColumn($column), $dir);
         }
         if ($limit !== null)  $qb->limit($limit);
         if ($offset !== null) $qb->offset($offset);
 
         $entities = $qb->fetchAll($this->entityClass);
-
         if ($loadRelations) {
-            foreach ($entities as $entity) {
-                $this->loadRelations($entity);
-            }
+            foreach ($entities as $entity) $this->loadRelations($entity);
         }
-
         return $entities;
     }
 
@@ -128,12 +136,8 @@ abstract class EntityRepository
      */
     public function findOneBy(array $criteria, bool $loadRelations = true): ?object
     {
-        try {
-            $results = $this->findBy($criteria, [], 1, null, $loadRelations);
-            return $results[0] ?? null;
-        } catch (\Throwable $e) {
-            throw $e;
-        }
+        $results = $this->findBy($criteria, [], 1, null, $loadRelations);
+        return $results[0] ?? null;
     }
 
     /**
@@ -147,11 +151,13 @@ abstract class EntityRepository
     {
         $qb = clone $this->qb;
         $qb->select('COUNT(*) AS count')->from($this->table);
+
+        $criteria = $this->normalizeCriteria($criteria);
         foreach ($criteria as $column => $value) {
             $qb->andWhere($column, '=', $value);
         }
         $row = $qb->fetch();
-        return $row?->count ?? 0;
+        return (int)($row?->count ?? 0);
     }
 
     /**
@@ -949,6 +955,80 @@ abstract class EntityRepository
                 }
             }
         }
+    }
+
+    /**
+     * @param string $key   e.g. 'company' or 'company_id'
+     * @return string       DB column to use in WHERE
+     * @throws \ReflectionException
+     */
+    private function normalizeColumn(string $key): string
+    {
+        // explicit override first
+        if (isset($this->columnMap[$key])) {
+            return $this->columnMap[$key];
+        }
+
+        // already looks like a concrete column
+        if (str_ends_with($key, '_id') || str_contains($key, '.')) {
+            return $key;
+        }
+
+        // if $key is a property on the entity and it's a relation, convert to FK
+        $rc = new \ReflectionClass($this->entityClass);
+        if ($rc->hasProperty($key)) {
+            $prop = $rc->getProperty($key);
+            if ($prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class)
+                || ($attr = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\OneToOne::class))
+                && $attr[0]->newInstance()->mappedBy === null /* owning side */
+            ) {
+                // Default relation FK rule: snake(prop) + '_id'
+                $defaultFk = $this->getRelationColumnName($key);
+
+                // If a map exists for that property, honor it (e.g. 'ipPool' => 'ippool')
+                return $this->columnMap[$key] ?? $defaultFk;
+            }
+        }
+
+        // plain field
+        return $key;
+    }
+
+    /**
+     * Accept entities or scalars in criteria values.
+     * @param mixed $value
+     * @return mixed
+     */
+    private function normalizeValue(mixed $value): mixed
+    {
+        if (is_object($value)) {
+            // extract id if present
+            if (property_exists($value, 'id')) {
+                $rp = new \ReflectionProperty($value, 'id');
+                $rp->setAccessible(true);
+                return $rp->isInitialized($value) ? $rp->getValue($value) : null;
+            }
+            // fallback – let PDO try to stringify (not recommended)
+            return (string) $value;
+        }
+        return $value;
+    }
+
+    /**
+     * Normalize a criteria array (keys & values).
+     * @param array<string,mixed> $criteria
+     * @return array<string,mixed>
+     * @throws \ReflectionException
+     */
+    private function normalizeCriteria(array $criteria): array
+    {
+        $out = [];
+        foreach ($criteria as $k => $v) {
+            $col = $this->normalizeColumn($k);
+            $val = $this->normalizeValue($v);
+            $out[$col] = $val;
+        }
+        return $out;
     }
 
 }
