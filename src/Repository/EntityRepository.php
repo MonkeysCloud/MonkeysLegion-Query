@@ -783,25 +783,31 @@ abstract class EntityRepository
     {
         $prop->setAccessible(true);
 
-        // ── If the entity hasn’t been persisted yet, nothing to load ────────────
         $ownId = $this->getEntityId($entity);
-        if (!$ownId) {
-            $prop->setValue($entity, []);
-            return;
-        }
+        if (!$ownId) { $prop->setValue($entity, []); return; }
 
-        // ── Resolve join-table + the two FK columns this ↔ related ──────────────
         [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
-
-        // ── Target table (snake-case of the related class name) ─────────────────
-        $targetTable = $this->tableOf($attr->targetEntity);
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
 
         $qb = clone $this->qb;
         $rows = $qb->select(['t.*'])
             ->from($targetTable, 't')
-            ->join($jt, 'j', "j.$invCol", '=', 't.id')   // j.user_id = t.id  (or the inverse)
-            ->where("j.$ownCol", '=', $ownId)            // j.company_id = {$company->id}
-            ->fetchAll($attr->targetEntity);
+            ->join($jt, 'j', "j.$invCol", '=', 't.id')
+            ->where("j.$ownCol", '=', $ownId)
+            ->fetchAll($targetClass);
+
+        // We need the target repository to call loadRelations() on each.
+        $targetRepoClass = str_replace('\\Entity\\', '\\Repository\\', $targetClass) . 'Repository';
+        if (class_exists($targetRepoClass)) {
+            /** @var \MonkeysLegion\Repository\EntityRepository $targetRepo */
+            $targetRepo = new $targetRepoClass($this->qb);
+            foreach ($rows as $i => $row) {
+                $targetRepo->loadRelations($row);
+            }
+        } else {
+            // Fallback: keep as-is without deep relations
+        }
 
         $prop->setValue($entity, $rows);
     }
