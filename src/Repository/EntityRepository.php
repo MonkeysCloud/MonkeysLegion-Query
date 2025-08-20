@@ -27,38 +27,10 @@ abstract class EntityRepository
     protected string $entityClass;
     protected array $columnMap = [];
 
+    // Track original values to detect changes
+    private array $originalValues = [];
+
     public function __construct(public QueryBuilder $qb) {}
-
-    /**
-     * Fetch all entities matching optional criteria.
-     *
-     * @param array<string,mixed> $criteria
-     * @param bool $loadRelations Whether to load relationships (default: true)
-     * @return object[]
-     * @throws \ReflectionException
-     */
-    public function findAll(array $criteria = [], bool $loadRelations = true): array
-    {
-        $qb = clone $this->qb;
-        $qb->select()->from($this->table);
-        $criteria = $this->normalizeCriteria($criteria);
-        foreach ($criteria as $column => $value) {
-            $qb->andWhere($column, '=', $value);
-        }
-        $rows = $qb->fetchAll();
-        $entities = array_map(
-            fn($r) => Hydrator::hydrate($this->entityClass, $r),
-            $rows
-        );
-
-        if ($loadRelations) {
-            foreach ($entities as $entity) {
-                $this->loadRelations($entity);
-            }
-        }
-
-        return $entities;
-    }
 
     /**
      * Find a single entity by primary key.
@@ -85,10 +57,32 @@ abstract class EntityRepository
             ->where('id', '=', $id)
             ->fetch($this->entityClass);
 
-        if ($entity && $loadRelations) {
-            $this->loadRelations($entity);
+        if ($entity) {
+            // Store original values for change detection
+            $this->storeOriginalValues($entity);
+
+            if ($loadRelations) {
+                $this->loadRelations($entity);
+            }
         }
+
         return $entity ?: null;
+    }
+
+    /**
+     * Find a single entity by arbitrary criteria.
+     *
+     * @param array<string,mixed> $criteria
+     * @param bool $loadRelations Whether to load relationships (default: true)
+     * @return object|null The found entity or null if not found.
+     */
+    public function findOneBy(array $criteria, bool $loadRelations = true): ?object
+    {
+        $results = $this->findBy($criteria, [], 1, null, $loadRelations);
+        if (!empty($results)) {
+            $this->storeOriginalValues($results[0]);
+        }
+        return $results[0] ?? null;
     }
 
     /**
@@ -121,57 +115,154 @@ abstract class EntityRepository
         if ($offset !== null) $qb->offset($offset);
 
         $entities = $qb->fetchAll($this->entityClass);
-        if ($loadRelations) {
-            foreach ($entities as $entity) $this->loadRelations($entity);
+
+        foreach ($entities as $entity) {
+            $this->storeOriginalValues($entity);
+            if ($loadRelations) {
+                $this->loadRelations($entity);
+            }
         }
+
         return $entities;
     }
 
     /**
-     * Find a single entity by arbitrary criteria.
+     * Fetch all entities matching optional criteria.
      *
      * @param array<string,mixed> $criteria
      * @param bool $loadRelations Whether to load relationships (default: true)
-     * @return object|null The found entity or null if not found.
-     */
-    public function findOneBy(array $criteria, bool $loadRelations = true): ?object
-    {
-        $results = $this->findBy($criteria, [], 1, null, $loadRelations);
-        return $results[0] ?? null;
-    }
-
-    /**
-     * Count entities matching criteria.
-     *
-     * @param array<string,mixed> $criteria
-     * @return int The number of entities matching the criteria.
+     * @return object[]
      * @throws \ReflectionException
      */
-    public function count(array $criteria = []): int
+    public function findAll(array $criteria = [], bool $loadRelations = true): array
     {
         $qb = clone $this->qb;
-        $qb->select('COUNT(*) AS count')->from($this->table);
-
+        $qb->select()->from($this->table);
         $criteria = $this->normalizeCriteria($criteria);
         foreach ($criteria as $column => $value) {
             $qb->andWhere($column, '=', $value);
         }
-        $row = $qb->fetch();
-        return (int)($row?->count ?? 0);
+        $rows = $qb->fetchAll();
+        $entities = array_map(
+            fn($r) => Hydrator::hydrate($this->entityClass, $r),
+            $rows
+        );
+
+        foreach ($entities as $entity) {
+            $this->storeOriginalValues($entity);
+            if ($loadRelations) {
+                $this->loadRelations($entity);
+            }
+        }
+
+        return $entities;
+    }
+
+    /**
+     * Store original values for change detection
+     */
+    private function storeOriginalValues(object $entity): void
+    {
+        if (!property_exists($entity, 'id')) {
+            return;
+        }
+
+        $idProp = new ReflectionProperty($entity, 'id');
+        $idProp->setAccessible(true);
+
+        if (!$idProp->isInitialized($entity)) {
+            return;
+        }
+
+        $id = $idProp->getValue($entity);
+        if (!$id) {
+            return;
+        }
+
+        $data = $this->extractPersistableData($entity);
+        $this->originalValues[spl_object_id($entity)] = $data;
+    }
+
+    /**
+     * Get only changed fields for an entity
+     */
+    private function getChangedFields(object $entity): array
+    {
+        $objectId = spl_object_id($entity);
+
+        // If no original values stored, consider all fields as changed
+        if (!isset($this->originalValues[$objectId])) {
+            return $this->extractPersistableData($entity);
+        }
+
+        $currentData = $this->extractPersistableData($entity);
+        $originalData = $this->originalValues[$objectId];
+        $changedData = [];
+
+        foreach ($currentData as $key => $value) {
+            // Always include ID for WHERE clause
+            if ($key === 'id') {
+                $changedData[$key] = $value;
+                continue;
+            }
+
+            // Check if value has changed
+            $originalValue = $originalData[$key] ?? null;
+
+            // Handle DateTime comparison
+            if ($value instanceof \DateTimeInterface && $originalValue instanceof \DateTimeInterface) {
+                if ($value->format('Y-m-d H:i:s') !== $originalValue->format('Y-m-d H:i:s')) {
+                    $changedData[$key] = $value;
+                }
+            }
+            // Handle array comparison (prevent re-encoding if unchanged)
+            elseif (is_array($value) && is_array($originalValue)) {
+                if (json_encode($value) !== json_encode($originalValue)) {
+                    $changedData[$key] = $value;
+                }
+            }
+            // Standard comparison
+            elseif ($value !== $originalValue) {
+                $changedData[$key] = $value;
+            }
+        }
+
+        return $changedData;
     }
 
     /**
      * Persist a new or existing entity. Returns insert ID or affected rows.
      *
      * @param object $entity The entity instance to save.
+     * @param bool $partial If true, only update changed fields (default: true for updates)
      * @return int The ID of the saved entity or number of affected rows.
      */
-    public function save(object $entity): int
+    public function save(object $entity, bool $partial = true): int
     {
-        $data = $this->extractPersistableData($entity);
+        // For updates, use partial update by default
+        $isUpdate = false;
+        if (property_exists($entity, 'id')) {
+            $idProp = new ReflectionProperty($entity, 'id');
+            $idProp->setAccessible(true);
+            if ($idProp->isInitialized($entity) && $idProp->getValue($entity)) {
+                $isUpdate = true;
+            }
+        }
+
+        // Get data to persist
+        if ($isUpdate && $partial) {
+            $data = $this->getChangedFields($entity);
+        } else {
+            $data = $this->extractPersistableData($entity);
+        }
 
         // ---- Normalize PHP values → DB scalars ---------------------------------
         foreach ($data as $key => $value) {
+            // Skip if the value hasn't changed and we're doing partial update
+            if ($isUpdate && $partial && $key !== 'id' && !array_key_exists($key, $data)) {
+                continue;
+            }
+
             if ($value instanceof \DateTimeInterface) {
                 $data[$key] = $value->format('Y-m-d H:i:s');
             } elseif (is_bool($value)) {
@@ -179,11 +270,16 @@ abstract class EntityRepository
             } elseif (is_float($value)) {
                 $data[$key] = (string)$value;            // keep precision for DECIMAL
             } elseif (is_array($value)) {
+                // Check if the value is already JSON (double-encoding prevention)
                 $data[$key] = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            } elseif (is_string($value)) {
+                // Check if this might be a JSON field that's already encoded
+                // This prevents double-encoding when the field wasn't properly decoded
+                $data[$key] = $value;
             }
         }
 
-        $pdo = $this->qb->pdo();   // QueryBuilder should expose the PDO. If your class
+        $pdo = $this->qb->pdo();
 
         // UPDATE path
         if (!empty($data['id'])) {
@@ -211,6 +307,10 @@ abstract class EntityRepository
             $stmt->bindValue(":_id", $id, \PDO::PARAM_INT);
 
             $stmt->execute();
+
+            // Update stored original values after successful save
+            $this->storeOriginalValues($entity);
+
             return $stmt->rowCount();
         }
 
@@ -241,9 +341,31 @@ abstract class EntityRepository
             $ref->setValue($entity, $id);
         }
 
+        // Store original values for new entity
+        $this->storeOriginalValues($entity);
+
         return $id;
     }
 
+    /**
+     * Count entities matching criteria.
+     *
+     * @param array<string,mixed> $criteria
+     * @return int The number of entities matching the criteria.
+     * @throws \ReflectionException
+     */
+    public function count(array $criteria = []): int
+    {
+        $qb = clone $this->qb;
+        $qb->select('COUNT(*) AS count')->from($this->table);
+
+        $criteria = $this->normalizeCriteria($criteria);
+        foreach ($criteria as $column => $value) {
+            $qb->andWhere($column, '=', $value);
+        }
+        $row = $qb->fetch();
+        return (int)($row?->count ?? 0);
+    }
 
     /**
      * Delete entity by primary key.
@@ -261,6 +383,9 @@ abstract class EntityRepository
             $rp = new ReflectionProperty($idOrEntity, 'id');
             $rp->setAccessible(true);
             $id = (int) $rp->getValue($idOrEntity);
+
+            // Clean up stored original values
+            unset($this->originalValues[spl_object_id($idOrEntity)]);
         } else {
             $id = $idOrEntity;
         }
@@ -368,6 +493,8 @@ abstract class EntityRepository
         return $data;
     }
 
+    // ... [Rest of the methods remain the same] ...
+
     /**
      * Get the database column name for a relation property.
      * Converts camelCase to snake_case and appends _id.
@@ -377,43 +504,27 @@ abstract class EntityRepository
      */
     private function getRelationColumnName(string $propertyName): string
     {
+        // Check if there's a specific mapping first
+        if (isset($this->columnMap[$propertyName])) {
+            return $this->columnMap[$propertyName];
+        }
+
+        // Special cases for common abbreviations that shouldn't be split
+        $specialCases = [
+            'ipPool' => 'ippool_id',
+            'ipAddress' => 'ipaddress_id',
+            'apiKey' => 'apikey_id',
+            'userId' => 'user_id',
+            // Add more special cases as needed
+        ];
+
+        if (isset($specialCases[$propertyName])) {
+            return $specialCases[$propertyName];
+        }
+
         // Convert camelCase to snake_case
         $snakeCase = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $propertyName));
         return $snakeCase . '_id';
-    }
-
-    /**
-     * Extract only properties annotated with #[Field] for persistence,
-     * skipping uninitialized id on new entities.
-     *
-     * @deprecated Use extractPersistableData() instead
-     * @param object $entity The entity instance to extract fields from.
-     * @return array<string, mixed> An associative array of field names and their values.
-     */
-    private function extractFields(object $entity): array
-    {
-        $data = [];
-        $ref  = new ReflectionClass($entity);
-
-        foreach ($ref->getProperties() as $prop) {
-            // Only include properties marked with #[Field]
-            if (! $prop->getAttributes(Field::class)) {
-                continue;
-            }
-
-            // Skip uninitialized id on insert
-            if ($prop->getName() === 'id' && ! $prop->isInitialized($entity)) {
-                continue;
-            }
-
-            if ($prop->isPrivate() || $prop->isProtected()) {
-                $prop->setAccessible(true);
-            }
-
-            $data[$prop->getName()] = $prop->getValue($entity);
-        }
-
-        return $data;
     }
 
     /**
@@ -502,12 +613,18 @@ abstract class EntityRepository
         $alias = 'e';
         $qb    = clone $this->qb;
 
-        return $qb
+        $entities = $qb
             ->select(["{$alias}.*"])
             ->from($this->table, $alias)
             ->join($jt->name, 'j', $joinFirst, '=', $joinSecond)
             ->where("j.$whereCol", '=', $relatedId)
             ->fetchAll($this->entityClass);
+
+        foreach ($entities as $entity) {
+            $this->storeOriginalValues($entity);
+        }
+
+        return $entities;
     }
 
     /**
