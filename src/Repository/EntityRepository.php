@@ -116,10 +116,21 @@ abstract class EntityRepository
 
         $entities = $qb->fetchAll($this->entityClass);
 
+        // Track loaded entities to prevent circular loading
+        $loadedEntities = [];
+
         foreach ($entities as $entity) {
             $this->storeOriginalValues($entity);
+
             if ($loadRelations) {
-                $this->loadRelations($entity);
+                $entityId = $this->getEntityId($entity);
+                $entityKey = get_class($entity) . ':' . $entityId;
+
+                // Mark this entity as being loaded
+                $loadedEntities[$entityKey] = true;
+
+                // Load relations with protection against circular references
+                $this->loadRelationsWithGuard($entity, $loadedEntities);
             }
         }
 
@@ -752,11 +763,16 @@ abstract class EntityRepository
      * Load all relationships for an entity.
      *
      * @param object $entity The entity to load relationships for
+     * @param array $loadedClasses Track which entity classes have been loaded to prevent infinite recursion
      * @throws \ReflectionException
      */
-    protected function loadRelations(object $entity): void
+    protected function loadRelations(object $entity, array $loadedClasses = []): void
     {
         $ref = new ReflectionClass($entity);
+
+        // Track this entity class to prevent circular loading
+        $entityClass = get_class($entity);
+        $loadedClasses[$entityClass] = true;
 
         foreach ($ref->getProperties() as $prop) {
             // Handle ManyToOne relationships
@@ -786,9 +802,207 @@ abstract class EntityRepository
             if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
                 /** @var ManyToMany $attr */
                 $attr = $manyToManyAttrs[0]->newInstance();
-                $this->loadManyToMany($entity, $prop, $attr);
+                $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedClasses);
             }
         }
+    }
+
+    /**
+     * Load relations with guard against circular references
+     *
+     * @param object $entity
+     * @param array $loadedEntities Already loaded entities in this query
+     */
+    protected function loadRelationsWithGuard(object $entity, array &$loadedEntities = []): void
+    {
+        $ref = new ReflectionClass($entity);
+
+        foreach ($ref->getProperties() as $prop) {
+            try {
+                // Handle ManyToOne relationships
+                if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
+                    /** @var ManyToOne $attr */
+                    $attr = $manyToOneAttrs[0]->newInstance();
+                    $this->loadManyToOneWithGuard($entity, $prop, $attr, $loadedEntities);
+                }
+
+                // Handle OneToOne relationships (owning side)
+                if ($oneToOneAttrs = $prop->getAttributes(OneToOne::class)) {
+                    /** @var OneToOne $attr */
+                    $attr = $oneToOneAttrs[0]->newInstance();
+                    if (!$attr->mappedBy) { // Only load if we're the owning side
+                        $this->loadOneToOneWithGuard($entity, $prop, $attr, $loadedEntities);
+                    }
+                }
+
+                // Handle OneToMany relationships
+                if ($oneToManyAttrs = $prop->getAttributes(OneToMany::class)) {
+                    /** @var OneToMany $attr */
+                    $attr = $oneToManyAttrs[0]->newInstance();
+                    $this->loadOneToManyWithGuard($entity, $prop, $attr, $loadedEntities);
+                }
+
+                // Handle ManyToMany relationships
+                if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
+                    /** @var ManyToMany $attr */
+                    $attr = $manyToManyAttrs[0]->newInstance();
+                    $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedEntities);
+                }
+            } catch (\Exception $e) {
+                // Log error but don't fail the entire load
+                error_log("Failed to load relation {$prop->getName()}: " . $e->getMessage());
+                $prop->setAccessible(true);
+                // Set empty value for failed relations
+                if ($oneToManyAttrs || $manyToManyAttrs) {
+                    $prop->setValue($entity, []);
+                } else {
+                    $prop->setValue($entity, null);
+                }
+            }
+        }
+    }
+
+    /**
+     * Load ManyToOne with guard
+     */
+    private function loadManyToOneWithGuard(object $entity, ReflectionProperty $prop, ManyToOne $attr, array &$loadedEntities): void
+    {
+        $prop->setAccessible(true);
+
+        // Get the foreign key column name
+        $fkColumn = $this->getRelationColumnName($prop->getName());
+
+        // Get the entity ID first
+        $entityId = $this->getEntityId($entity);
+        if (!$entityId) {
+            $prop->setValue($entity, null);
+            return;
+        }
+
+        // Query for the FK value
+        $qb = clone $this->qb;
+        $row = $qb->select([$fkColumn])
+            ->from($this->table)
+            ->where('id', '=', $entityId)
+            ->fetch();
+
+        $fkValue = $row ? ($row->$fkColumn ?? null) : null;
+
+        if ($fkValue === null) {
+            $prop->setValue($entity, null);
+            return;
+        }
+
+        // Check if we've already loaded this related entity
+        $relatedKey = $attr->targetEntity . ':' . $fkValue;
+        if (isset($loadedEntities[$relatedKey])) {
+            // Already loaded, skip to prevent circular reference
+            $prop->setValue($entity, null);
+            return;
+        }
+
+        // Load the related entity
+        $targetTable = $this->tableOf($attr->targetEntity);
+        $qb2 = clone $this->qb;
+        $relatedEntity = $qb2->select()
+            ->from($targetTable)
+            ->where('id', '=', $fkValue)
+            ->fetch($attr->targetEntity);
+
+        $prop->setValue($entity, $relatedEntity ?: null);
+
+        // Don't recursively load relations for ManyToOne to prevent deep nesting
+    }
+
+    /**
+     * Load OneToOne with guard
+     */
+    private function loadOneToOneWithGuard(object $entity, ReflectionProperty $prop, OneToOne $attr, array &$loadedEntities): void
+    {
+        // Same as ManyToOne for owning side
+        $this->loadManyToOneWithGuard($entity, $prop, new ManyToOne(
+            targetEntity: $attr->targetEntity,
+            inversedBy: $attr->inversedBy,
+            nullable: $attr->nullable
+        ), $loadedEntities);
+    }
+
+    /**
+     * Load OneToMany with guard
+     */
+    private function loadOneToManyWithGuard(object $entity, ReflectionProperty $prop, OneToMany $attr, array &$loadedEntities): void
+    {
+        $prop->setAccessible(true);
+        $entityId = $this->getEntityId($entity);
+
+        if (!$entityId) {
+            $prop->setValue($entity, []);
+            return;
+        }
+
+        // Find the FK column in the target entity
+        $targetRef = new ReflectionClass($attr->targetEntity);
+        $fkColumn = null;
+
+        // Look for the inverse ManyToOne property
+        if ($attr->mappedBy) {
+            if ($targetRef->hasProperty($attr->mappedBy)) {
+                $fkColumn = $this->getRelationColumnName($attr->mappedBy);
+            }
+        }
+
+        if (!$fkColumn) {
+            $prop->setValue($entity, []);
+            return;
+        }
+
+        $targetTable = $this->tableOf($attr->targetEntity);
+        $qb = clone $this->qb;
+        $related = $qb->select()
+            ->from($targetTable)
+            ->where($fkColumn, '=', $entityId)
+            ->fetchAll($attr->targetEntity);
+
+        // Don't recursively load relations for collections to prevent deep nesting
+        $prop->setValue($entity, $related);
+    }
+
+    /**
+     * Load ManyToMany with guard
+     */
+    private function loadManyToManyWithGuard(
+        object             $entity,
+        ReflectionProperty $prop,
+        ManyToMany         $attr,
+        array              &$loadedEntities
+    ): void {
+        $prop->setAccessible(true);
+
+        $ownId = $this->getEntityId($entity);
+        if (!$ownId) {
+            $prop->setValue($entity, []);
+            return;
+        }
+
+        try {
+            [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
+        } catch (\Exception $e) {
+            $prop->setValue($entity, []);
+            return;
+        }
+
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
+
+        $qb = clone $this->qb;
+        $rows = $qb->select(['t.*'])
+            ->from($targetTable, 't')
+            ->join($jt, 'j', "j.$invCol", '=', 't.id')
+            ->where("j.$ownCol", '=', $ownId)
+            ->fetchAll($targetClass);
+
+        // Don't recursively load relations for ManyToMany to prevent circular references
+        $prop->setValue($entity, $rows);
     }
 
     /**
@@ -886,50 +1100,6 @@ abstract class EntityRepository
     }
 
     /**
-     * Load a ManyToMany relationship and hydrate the target entities.
-     *
-     * @param object              $entity The owner/inverse entity
-     * @param ReflectionProperty  $prop   The property carrying #[ManyToMany]
-     * @param ManyToMany          $attr   The attribute metadata
-     */
-    private function loadManyToMany(
-        object             $entity,
-        ReflectionProperty $prop,
-        ManyToMany         $attr
-    ): void
-    {
-        $prop->setAccessible(true);
-
-        $ownId = $this->getEntityId($entity);
-        if (!$ownId) { $prop->setValue($entity, []); return; }
-
-        [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
-        $targetClass = $attr->targetEntity;
-        $targetTable = $this->tableOf($targetClass);
-
-        $qb = clone $this->qb;
-        $rows = $qb->select(['t.*'])
-            ->from($targetTable, 't')
-            ->join($jt, 'j', "j.$invCol", '=', 't.id')
-            ->where("j.$ownCol", '=', $ownId)
-            ->fetchAll($targetClass);
-
-        // We need the target repository to call loadRelations() on each.
-        $targetRepoClass = str_replace('\\Entity\\', '\\Repository\\', $targetClass) . 'Repository';
-        if (class_exists($targetRepoClass)) {
-            /** @var \MonkeysLegion\Repository\EntityRepository $targetRepo */
-            $targetRepo = new $targetRepoClass($this->qb);
-            foreach ($rows as $i => $row) {
-                $targetRepo->loadRelations($row);
-            }
-        } else {
-            // Fallback: keep as-is without deep relations
-        }
-
-        $prop->setValue($entity, $rows);
-    }
-
-    /**
      * Get entity ID value.
      */
     private function getEntityId(object $entity): ?int
@@ -940,31 +1110,6 @@ abstract class EntityRepository
             return $idProp->isInitialized($entity) ? $idProp->getValue($entity) : null;
         }
         return null;
-    }
-
-    /**
-     * Convert a class name or camelCase string to snake_case.
-     *
-     * Examples:
-     *   App\Entity\User  -> "user"
-     *   BlogPost         -> "blog_post"
-     *   blogPost         -> "blog_post"
-     *
-     * @param string $input FQCN or plain string
-     * @return string
-     * @throws \ReflectionException
-     */
-    protected function snake(string $input): string
-    {
-        // If we get a FQCN, keep only the short class name
-        if (str_contains($input, '\\')) {
-            $input = new \ReflectionClass($input)->getShortName();
-        }
-
-        // Insert underscores before capitals, then lowercase
-        $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $input));
-
-        return $snake;
     }
 
     /**
