@@ -30,6 +30,9 @@ abstract class EntityRepository
     // Track original values to detect changes
     private array $originalValues = [];
 
+    // cache: tableName => array<string> columns
+    private array $tableColumnsCache = [];
+
     public function __construct(public QueryBuilder $qb) {}
 
     /**
@@ -241,6 +244,78 @@ abstract class EntityRepository
         return $changedData;
     }
 
+    private function assertRelationsAreSerialized(object $entity, array $data): void
+    {
+        $ref = new \ReflectionClass($entity);
+
+        foreach ($ref->getProperties() as $prop) {
+            $attrs = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class);
+            if (!$attrs) continue;
+
+            $prop->setAccessible(true);
+            $val = $prop->getValue($entity);
+            if ($val === null) continue; // relation not set → nothing to enforce
+
+            $col = $this->getRelationColumnName($prop->getName());
+            if (!array_key_exists($col, $data)) {
+                error_log('' . get_class($val) . ' is not a DateTime, checking for ManyToOne');
+                throw new \LogicException(
+                    "Missing FK column `$col` for relation `{$prop->getName()}` on `{$this->table}`. " .
+                    "Did you annotate the property with #[ManyToOne] and map the column correctly?"
+                );
+            }
+            if ($data[$col] === null) {
+                error_log('' . get_class($val) . ' is not a DateTime, checking for ManyToOne');
+                throw new \LogicException(
+                    "FK `$col` is NULL even though relation `{$prop->getName()}` is set. " .
+                    "Check that the related entity has an initialized id."
+                );
+            }
+        }
+    }
+
+    /**
+     * If a payload key isn't an actual column, try to remap it to a column
+     * that DOES exist on the table (e.g. listGroup_id → list_group_id).
+     */
+    private function remapColumnsToTable(array $data, array $colsInTable): array
+    {
+        $colsSet = array_flip($colsInTable);
+        $out = $data;
+
+        foreach ($data as $key => $val) {
+            if (isset($colsSet[$key])) {
+                continue; // already a real column
+            }
+
+            // 1) camelCase_id → snake_case_id  (e.g. listGroup_id → list_group_id)
+            if (str_ends_with($key, '_id') && preg_match('/[A-Z]/', $key)) {
+                $base = substr($key, 0, -3); // drop "_id"
+                $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $base)) . '_id';
+                if (isset($colsSet[$snake])) {
+                    unset($out[$key]);
+                    $out[$snake] = $val;
+                    continue;
+                }
+            }
+
+            // 2) fuzzy: remove underscores and compare prefixes of *_id columns
+            //    (handles odd naming like list_id, group_id, etc.)
+            $needle = preg_replace('/_+/', '', strtolower($key));
+            foreach ($colsInTable as $col) {
+                if (!str_ends_with($col, '_id')) continue;
+                $colKey = preg_replace('/_+/', '', strtolower($col));
+                if ($colKey === $needle) {
+                    unset($out[$key]);
+                    $out[$col] = $val;
+                    continue 2;
+                }
+            }
+        }
+
+        return $out;
+    }
+
     /**
      * Persist a new or existing entity. Returns insert ID or affected rows.
      *
@@ -248,86 +323,244 @@ abstract class EntityRepository
      * @param bool $partial If true, only update changed fields (default: true for updates)
      * @return int The ID of the saved entity or number of affected rows.
      */
-    public function save(object $entity, bool $partial = true): int
+    public function save(object $entity, bool $partial = true, bool $upsert = false): int
     {
-        // For updates, use partial update by default
+        // ——— decide update vs insert
         $isUpdate = false;
         if (property_exists($entity, 'id')) {
-            $idProp = new ReflectionProperty($entity, 'id');
+            $idProp = new \ReflectionProperty($entity, 'id');
             $idProp->setAccessible(true);
-            if ($idProp->isInitialized($entity) && $idProp->getValue($entity)) {
-                $isUpdate = true;
-            }
+            if ($idProp->isInitialized($entity) && $idProp->getValue($entity)) $isUpdate = true;
         }
 
-        // Get data to persist
-        if ($isUpdate && $partial) {
-            $data = $this->getChangedFields($entity);
-        } else {
-            $data = $this->extractPersistableData($entity);
-        }
+        // ——— collect data
+        $data = ($isUpdate && $partial) ? $this->getChangedFields($entity) : $this->extractPersistableData($entity);
 
-        // ---- Normalize PHP values → DB scalars ---------------------------------
+        // ——— normalize scalars
         foreach ($data as $key => $value) {
-            // Skip if the value hasn't changed and we're doing partial update
-            if ($isUpdate && $partial && $key !== 'id' && !array_key_exists($key, $data)) {
-                continue;
-            }
-
-            if ($value instanceof \DateTimeInterface) {
-                $data[$key] = $value->format('Y-m-d H:i:s');
-            } elseif (is_bool($value)) {
-                $data[$key] = $value ? 1 : 0;
-            } elseif (is_float($value)) {
-                $data[$key] = (string)$value;            // keep precision for DECIMAL
-            } elseif (is_array($value)) {
-                // Check if the value is already JSON (double-encoding prevention)
-                $data[$key] = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            } elseif (is_string($value)) {
-                // Check if this might be a JSON field that's already encoded
-                // This prevents double-encoding when the field wasn't properly decoded
-                $data[$key] = $value;
-            }
+            if     ($value instanceof \DateTimeInterface) $data[$key] = $value->format('Y-m-d H:i:s');
+            elseif (is_bool($value))                      $data[$key] = $value ? 1 : 0;
+            elseif (is_float($value))                     $data[$key] = (string)$value;
+            elseif (is_array($value))                     $data[$key] = json_encode($value, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+            elseif (is_object($value))                    throw new \InvalidArgumentException("Column `$key` holds object ".get_class($value));
         }
 
+        // ——— table columns
+        $colsInTable = $this->listTableColumns($this->table);
+
+        // Derive FK column names from entity attributes (fallback if FK metadata is absent)
+        $fkColsFromProps = [];
+        try {
+            $ref = new \ReflectionClass($entity);
+            foreach ($ref->getProperties() as $prop) {
+                $attrs = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class);
+                if (!$attrs) continue;
+                try { $fkColsFromProps[] = $this->getRelationColumnName($prop->getName()); } catch (\Throwable $ignored) {}
+            }
+        } catch (\Throwable $ignored) {}
+
+        // ——— remap odd keys to real columns
+        $data = $this->remapColumnsToTable($data, $colsInTable);
+
+        // ——— validate columns exist
+        $unknown = array_diff(array_keys($data), $colsInTable);
+        if ($unknown) {
+            throw new \RuntimeException("Unknown columns for `{$this->table}`: ".implode(', ', $unknown));
+        }
+
+        // ——— DB handle
         $pdo = $this->qb->pdo();
+        if ($pdo->getAttribute(\PDO::ATTR_ERRMODE) !== \PDO::ERRMODE_EXCEPTION) {
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        }
+        $schema = (string)$pdo->query('SELECT DATABASE()')->fetchColumn();
 
-        // UPDATE path
-        if (!empty($data['id'])) {
-            $id = (int)$data['id'];
-            unset($data['id']);
+        // STATIC caches
+        static $___fkCache = [];
+        static $___uniqueCache = [];
+        static $___tablesCache = [];
 
-            if (empty($data)) {
-                return 0; // nothing to update
+        // Load all table names in schema once
+        $loadTables = function(string $schema) use ($pdo, &$___tablesCache): array {
+            if (isset($___tablesCache[$schema])) return $___tablesCache[$schema];
+            $st = $pdo->prepare("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = :s");
+            $st->execute([':s' => $schema]);
+            return $___tablesCache[$schema] = array_map(fn($r) => $r['TABLE_NAME'], $st->fetchAll(\PDO::FETCH_ASSOC));
+        };
+
+        // Resolve actual table name (handles underscores→none, case-insensitive)
+        $resolveTable = function(string $schema, string $name) use ($loadTables): ?string {
+            $tables = $loadTables($schema);
+            $map = [];
+            foreach ($tables as $t) { $map[strtolower($t)] = $t; }
+            $needle = strtolower($name);
+            if (isset($map[$needle])) return $map[$needle];
+            $needleNoUnderscore = str_replace('_','', $needle);
+            foreach ($map as $low => $orig) {
+                if (str_replace('_','',$low) === $needleNoUnderscore) return $orig;
             }
+            return null;
+        };
 
-            // build: UPDATE `table` SET `col` = :col, ... WHERE id = :_id
-            $setParts = [];
-            foreach ($data as $col => $_) {
-                $setParts[] = "`{$col}` = :{$col}";
+        // FKs: COLUMN_NAME => ['ref_schema','ref_table','ref_col','constraint_name']
+        $loadFks = function(string $schema, string $table) use ($pdo, &$___fkCache): array {
+            $key = "{$schema}.{$table}";
+            if (isset($___fkCache[$key])) return $___fkCache[$key];
+            $sql = "SELECT COLUMN_NAME, CONSTRAINT_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+                  FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                 WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t AND REFERENCED_TABLE_NAME IS NOT NULL";
+            $st  = $pdo->prepare($sql);
+            $st->execute([':s' => $schema, ':t' => $table]);
+            $out = [];
+            foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                $out[$r['COLUMN_NAME']] = [
+                    'constraint_name' => $r['CONSTRAINT_NAME'],
+                    'ref_schema'      => $r['REFERENCED_TABLE_SCHEMA'] ?: $schema,
+                    'ref_table'       => $r['REFERENCED_TABLE_NAME'],
+                    'ref_col'         => $r['REFERENCED_COLUMN_NAME'] ?: 'id',
+                ];
             }
-            $sql = "UPDATE `{$this->table}` SET " . implode(', ', $setParts) . " WHERE `id` = :_id";
+            return $___fkCache[$key] = $out;
+        };
 
-            $stmt = $pdo->prepare($sql);
-
-            // bind SET values
-            foreach ($data as $col => $val) {
-                $stmt->bindValue(":{$col}", $val);
+        // Unique indexes (incl. PRIMARY)
+        $loadUniqueIndexes = function(string $schema, string $table) use ($pdo, &$___uniqueCache): array {
+            $key = "{$schema}.{$table}";
+            if (isset($___uniqueCache[$key])) return $___uniqueCache[$key];
+            $sql = "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, SEQ_IN_INDEX
+                  FROM INFORMATION_SCHEMA.STATISTICS
+                 WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t
+              ORDER BY INDEX_NAME, SEQ_IN_INDEX";
+            $st  = $pdo->prepare($sql);
+            $st->execute([':s' => $schema, ':t' => $table]);
+            $idx = [];
+            foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                if ((int)$r['NON_UNIQUE'] !== 0) continue;
+                $name = $r['INDEX_NAME'];
+                if (!isset($idx[$name])) $idx[$name] = ['name' => $name, 'columns' => [], 'is_primary' => ($name === 'PRIMARY')];
+                $idx[$name]['columns'][] = $r['COLUMN_NAME'];
             }
-            // bind WHERE id
-            $stmt->bindValue(":_id", $id, \PDO::PARAM_INT);
+            return $___uniqueCache[$key] = array_values($idx);
+        };
 
-            $stmt->execute();
+        // Select id by composite key
+        $selectIdByKey = function(array $key) {
+            $q = (clone $this->qb)->select(['id'])->from($this->table);
+            if (method_exists($q,'useWrite')) $q->useWrite();
+            $first = true;
+            foreach ($key as $c => $v) {
+                if ($first) { $q->where($c,'=',$v); $first=false; }
+                else        { $q->andWhere($c,'=',$v); }
+            }
+            return $q->fetch();
+        };
 
-            // Update stored original values after successful save
-            $this->storeOriginalValues($entity);
+        // Self-heal FK (when 1452 is thrown due to wrong referenced table name)
+        $attemptRepairFk = function(string $schema, string $table, array $fkMap) use ($pdo, $resolveTable): bool {
+            foreach ($fkMap as $col => $meta) {
+                $refSchema   = $meta['ref_schema'] ?: $schema;
+                $refTableOrg = $meta['ref_table'] ?? '';
+                $refCol      = $meta['ref_col'] ?? 'id';
+                $cname       = $meta['constraint_name'] ?? null;
+                if (!$refTableOrg || !$cname) continue;
 
-            return $stmt->rowCount();
+                $resolved = $resolveTable($refSchema, $refTableOrg);
+                if (!$resolved || strcasecmp($resolved, $refTableOrg) === 0) continue;
+
+                // verify resolved table really exists
+                $chk = $pdo->prepare("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=:s AND TABLE_NAME=:t");
+                $chk->execute([':s'=>$refSchema, ':t'=>$resolved]);
+                if (!$chk->fetchColumn()) continue;
+
+                try {
+                    $pdo->exec("ALTER TABLE `{$table}` DROP FOREIGN KEY `{$cname}`");
+                    $pdo->exec("ALTER TABLE `{$table}` ADD CONSTRAINT `{$cname}` FOREIGN KEY (`{$col}`) REFERENCES `{$resolved}` (`{$refCol}`) ON DELETE SET NULL");
+                    return true;
+                } catch (\Throwable $e) {
+                    // ignore and continue
+                }
+            }
+            return false;
+        };
+
+        // Build metadata
+        $fkMap     = $loadFks($schema, $this->table);
+        $uniqueIdx = $loadUniqueIndexes($schema, $this->table);
+
+        // Choose a natural key (prefer real UNIQUEs, de-prioritize FK-only)
+        $dataKeys = array_keys($data);
+        $candidateUnique = [];
+        foreach ($uniqueIdx as $idx) {
+            $cols = $idx['columns'];
+            $isOnlyId = (count($cols) === 1 && $cols[0]==='id');
+            if ($idx['is_primary'] && $isOnlyId) continue;
+            if (count(array_diff($cols, $dataKeys)) === 0) {
+                $fkOnly = count(array_diff($cols, array_keys($fkMap))) === 0;
+                $bonus = 0;
+                foreach ($cols as $c) {
+                    if (stripos($c,'email') !== false || stripos($c,'uuid') !== false || stripos($c,'external') !== false) { $bonus += 2; break; }
+                }
+                $candidateUnique[] = ['name'=>$idx['name'],'cols'=>$cols,'fkOnly'=>$fkOnly,'arity'=>count($cols),'bonus'=>$bonus];
+            }
+        }
+        usort($candidateUnique, function($a,$b){
+            if ($a['fkOnly'] !== $b['fkOnly']) return $a['fkOnly'] ? 1 : -1; // prefer non-FK-only
+            if ($a['arity']  !== $b['arity'])  return $b['arity'] <=> $a['arity'];
+            if ($a['bonus']  !== $b['bonus'])  return $b['bonus'] <=> $a['bonus'];
+            return count($a['cols']) <=> count($b['cols']);
+        });
+        $chosenUnique   = $candidateUnique[0] ?? null;
+        $naturalKeyCols = $chosenUnique['cols'] ?? [];
+
+        // Try to match existing row by natural key
+        if (!$isUpdate && $naturalKeyCols) {
+            $keyMap = []; foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
+            $existing = $selectIdByKey($keyMap);
+            if ($existing && isset($existing->id)) {
+                $isUpdate = true; $data['id'] = (int)$existing->id;
+            }
         }
 
-        // INSERT path
-        // build: INSERT INTO `table` (`c1`,`c2`,...) VALUES (:c1,:c2,...)
-        $cols        = array_keys($data);
+        // ——— UPDATE path
+        if (!empty($data['id'])) {
+            $id = (int)$data['id']; unset($data['id']);
+            if (empty($data)) return 0;
+            $setParts = []; foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
+            $sql = "UPDATE `{$this->table}` SET ".implode(', ', $setParts)." WHERE `id` = :_id";
+            try {
+                $stmt = $pdo->prepare($sql);
+                foreach ($data as $col => $val) { $stmt->bindValue(":{$col}", $val); }
+                $stmt->bindValue(":_id", $id, \PDO::PARAM_INT);
+                $stmt->execute();
+                $this->storeOriginalValues($entity);
+                return $stmt->rowCount();
+            } catch (\PDOException $e) { throw $e; }
+        }
+
+        // ——— INSERT / UPSERT
+        if (empty($data)) throw new \LogicException("No data to INSERT for `{$this->table}` and entity ".get_class($entity));
+
+        // Soft FK preflight with resolution (log-only previously; now silent — DB enforces truth)
+        $fkCols = array_keys($fkMap);
+        foreach ($fkColsFromProps as $fkPropCol) if (!in_array($fkPropCol, $fkCols, true)) $fkCols[] = $fkPropCol;
+        foreach ($fkCols as $col) {
+            if (!array_key_exists($col, $data)) continue;
+            try {
+                $meta = $fkMap[$col] ?? ['ref_schema'=>$schema, 'ref_table'=>preg_replace('/_id$/','',$col), 'ref_col'=>'id'];
+                $refSchema = $meta['ref_schema'] ?? $schema;
+                $refTableOrig = $meta['ref_table'] ?? preg_replace('/_id$/','',$col);
+                $refTable = $resolveTable($refSchema, $refTableOrig) ?: $refTableOrig;
+                $refCol   = $meta['ref_col'] ?? 'id';
+
+                $q = (clone $this->qb)->select([$refCol])->from($refTable)->where($refCol, '=', $data[$col]);
+                if (method_exists($q,'useWrite')) $q->useWrite();
+                $q->fetch(); // ignore result; DB will enforce for real
+            } catch (\Throwable $fkEx) {
+                // soft-skip any preflight errors
+            }
+        }
+
+        $cols         = array_keys($data);
         $placeholders = array_map(fn($c) => ':' . $c, $cols);
 
         $sql = sprintf(
@@ -337,25 +570,90 @@ abstract class EntityRepository
             implode(',', $placeholders)
         );
 
-        $stmt = $pdo->prepare($sql);
-        foreach ($data as $col => $val) {
-            $stmt->bindValue(":{$col}", $val);
+        if ($chosenUnique && !$upsert) { $upsert = true; }
+        if ($upsert && $chosenUnique) {
+            $sql .= " ON DUPLICATE KEY UPDATE `id` = LAST_INSERT_ID(`id`)";
+            if (in_array('subscribed_at', $cols, true)) $sql .= ", `subscribed_at` = VALUES(`subscribed_at`)";
         }
-        $stmt->execute();
 
-        $id = (int)$pdo->lastInsertId();
+        $id = 0;
+        $retriedAfterRepair = false;
 
-        // reflectively set id if property exists
+        while (true) {
+            try {
+                $stmt = $pdo->prepare($sql);
+                foreach ($data as $col => $val) { $stmt->bindValue(":{$col}", $val); }
+                $stmt->execute();
+                $id = (int)$pdo->lastInsertId();
+                break;
+            } catch (\PDOException $e) {
+                $mysqlCode = isset($e->errorInfo[1]) ? (int)$e->errorInfo[1] : 0;
+
+                // Duplicate → update by natural key
+                if ($mysqlCode === 1062 && $naturalKeyCols) {
+                    $keyMap = []; foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
+                    $row = $selectIdByKey($keyMap);
+                    if ($row && isset($row->id)) {
+                        $existingId = (int)$row->id;
+                        $setParts = []; foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
+                        $updateSql = "UPDATE `{$this->table}` SET ".implode(', ', $setParts)." WHERE `id` = :_id";
+                        $stmt = $pdo->prepare($updateSql);
+                        foreach ($data as $col => $val) { $stmt->bindValue(":{$col}", $val); }
+                        $stmt->bindValue(":_id", $existingId, \PDO::PARAM_INT);
+                        $stmt->execute();
+
+                        if (property_exists($entity, 'id')) {
+                            $rp = new \ReflectionProperty($entity, 'id'); $rp->setAccessible(true);
+                            $rp->setValue($entity, $existingId);
+                        }
+                        $this->storeOriginalValues($entity);
+                        return $existingId;
+                    }
+                }
+
+                // FK wrong referenced table: try FK repair once, then retry
+                if ($mysqlCode === 1452 && !$retriedAfterRepair) {
+                    if ($attemptRepairFk($schema, $this->table, $fkMap)) {
+                        $retriedAfterRepair = true;
+                        continue; // retry INSERT
+                    }
+                }
+
+                throw $e; // not handled
+            }
+        }
+
+        // ——— VERIFY
+        $verifyRow = null;
+        if ($naturalKeyCols) {
+            $keyMap = []; foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
+            try {
+                $v = (clone $this->qb);
+                if (method_exists($v,'useWrite')) $v->useWrite();
+                $verify = $v->select(['id'])->from($this->table)->where(array_key_first($keyMap), '=', reset($keyMap));
+                $first = true;
+                foreach ($keyMap as $k => $vv) { if ($first) { $first=false; continue; } $verify->andWhere($k,'=',$vv); }
+                $verifyRow = $verify->fetch();
+            } catch (\Exception $ex) { /* ignore */ }
+        } elseif ($id > 0) {
+            try {
+                $v = (clone $this->qb);
+                if (method_exists($v,'useWrite')) $v->useWrite();
+                $verifyRow = $v->select(['id'])->from($this->table)->where('id','=',$id)->fetch();
+            } catch (\Exception $ex) { /* ignore */ }
+        }
+
+        if (!$verifyRow && $id <= 0) {
+            throw new \RuntimeException("INSERT appeared to succeed but row not visible on same connection.");
+        }
+
         if (property_exists($entity, 'id')) {
-            $ref = new \ReflectionProperty($entity, 'id');
-            $ref->setAccessible(true);
-            $ref->setValue($entity, $id);
+            $ref = new \ReflectionProperty($entity, 'id'); $ref->setAccessible(true);
+            $ref->setValue($entity, (int)($verifyRow->id ?? $id));
         }
 
-        // Store original values for new entity
         $this->storeOriginalValues($entity);
-
-        return $id;
+        return (int)($verifyRow->id ?? $id);
     }
 
     /**
@@ -504,38 +802,33 @@ abstract class EntityRepository
         return $data;
     }
 
-    // ... [Rest of the methods remain the same] ...
-
     /**
-     * Get the database column name for a relation property.
-     * Converts camelCase to snake_case and appends _id.
-     *
-     * @param string $propertyName The property name (e.g., 'media', 'parentCategory')
-     * @return string The column name (e.g., 'media_id', 'parent_category_id')
+     * Return list of column names for a table (cached).
      */
-    private function getRelationColumnName(string $propertyName): string
+    private function listTableColumns(string $table): array
     {
-        // Check if there's a specific mapping first
-        if (isset($this->columnMap[$propertyName])) {
-            return $this->columnMap[$propertyName];
+        if (isset($this->tableColumnsCache[$table])) {
+            return $this->tableColumnsCache[$table];
         }
 
-        // Special cases for common abbreviations that shouldn't be split
-        $specialCases = [
-            'ipPool' => 'ippool_id',
-            'ipAddress' => 'ipaddress_id',
-            'apiKey' => 'apikey_id',
-            'userId' => 'user_id',
-            // Add more special cases as needed
-        ];
+        $pdo = $this->qb->pdo();
 
-        if (isset($specialCases[$propertyName])) {
-            return $specialCases[$propertyName];
+        // Prefer information_schema (works across engines and preserves case)
+        $sql = "SELECT COLUMN_NAME 
+              FROM information_schema.columns 
+             WHERE table_schema = DATABASE() 
+               AND table_name = :t";
+        $stmt = $pdo->prepare($sql);
+        if ($stmt->execute([':t' => $table])) {
+            $cols = array_map(fn($r) => $r['COLUMN_NAME'], $stmt->fetchAll(\PDO::FETCH_ASSOC));
+        } else {
+            // Fallback to DESCRIBE
+            $stmt = $pdo->query("DESCRIBE `{$table}`");
+            $cols = $stmt ? array_map(fn($r) => $r['Field'], $stmt->fetchAll(\PDO::FETCH_ASSOC)) : [];
         }
 
-        // Convert camelCase to snake_case
-        $snakeCase = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $propertyName));
-        return $snakeCase . '_id';
+        $this->tableColumnsCache[$table] = $cols ?: [];
+        return $this->tableColumnsCache[$table];
     }
 
     /**
@@ -869,17 +1162,17 @@ abstract class EntityRepository
     {
         $prop->setAccessible(true);
 
-        // Get the foreign key column name
+        // FK column lives on THIS table
         $fkColumn = $this->getRelationColumnName($prop->getName());
 
-        // Get the entity ID first
+        // Get this entity's id
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
             $prop->setValue($entity, null);
             return;
         }
 
-        // Query for the FK value
+        // Fetch FK value
         $qb = clone $this->qb;
         $row = $qb->select([$fkColumn])
             ->from($this->table)
@@ -887,21 +1180,19 @@ abstract class EntityRepository
             ->fetch();
 
         $fkValue = $row ? ($row->$fkColumn ?? null) : null;
-
         if ($fkValue === null) {
             $prop->setValue($entity, null);
             return;
         }
 
-        // Check if we've already loaded this related entity
+        // Avoid circular re-load
         $relatedKey = $attr->targetEntity . ':' . $fkValue;
         if (isset($loadedEntities[$relatedKey])) {
-            // Already loaded, skip to prevent circular reference
             $prop->setValue($entity, null);
             return;
         }
 
-        // Load the related entity
+        // Load related entity by its table/id
         $targetTable = $this->tableOf($attr->targetEntity);
         $qb2 = clone $this->qb;
         $relatedEntity = $qb2->select()
@@ -910,9 +1201,8 @@ abstract class EntityRepository
             ->fetch($attr->targetEntity);
 
         $prop->setValue($entity, $relatedEntity ?: null);
-
-        // Don't recursively load relations for ManyToOne to prevent deep nesting
     }
+
 
     /**
      * Load OneToOne with guard
@@ -934,38 +1224,29 @@ abstract class EntityRepository
     {
         $prop->setAccessible(true);
         $entityId = $this->getEntityId($entity);
-
         if (!$entityId) {
             $prop->setValue($entity, []);
             return;
         }
 
-        // Find the FK column in the target entity
-        $targetRef = new ReflectionClass($attr->targetEntity);
-        $fkColumn = null;
+        $targetTable = $this->tableOf($attr->targetEntity);
 
-        // Look for the inverse ManyToOne property
-        if ($attr->mappedBy) {
-            if ($targetRef->hasProperty($attr->mappedBy)) {
-                $fkColumn = $this->getRelationColumnName($attr->mappedBy);
-            }
-        }
-
-        if (!$fkColumn) {
+        // Determine FK on the TARGET table using mappedBy
+        if (!$attr->mappedBy) {
             $prop->setValue($entity, []);
             return;
         }
+        $fkColumn = $this->getRelationColumnName($attr->mappedBy, $targetTable);
 
-        $targetTable = $this->tableOf($attr->targetEntity);
         $qb = clone $this->qb;
         $related = $qb->select()
             ->from($targetTable)
             ->where($fkColumn, '=', $entityId)
             ->fetchAll($attr->targetEntity);
 
-        // Don't recursively load relations for collections to prevent deep nesting
         $prop->setValue($entity, $related);
     }
+
 
     /**
      * Load ManyToMany with guard
@@ -1012,17 +1293,14 @@ abstract class EntityRepository
     {
         $prop->setAccessible(true);
 
-        // Get the foreign key column name
         $fkColumn = $this->getRelationColumnName($prop->getName());
 
-        // Get the entity ID first
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
             $prop->setValue($entity, null);
             return;
         }
 
-        // Query for the FK value
         $qb = clone $this->qb;
         $row = $qb->select([$fkColumn])
             ->from($this->table)
@@ -1030,13 +1308,11 @@ abstract class EntityRepository
             ->fetch();
 
         $fkValue = $row ? ($row->$fkColumn ?? null) : null;
-
         if ($fkValue === null) {
             $prop->setValue($entity, null);
             return;
         }
 
-        // Load the related entity
         $targetTable = $this->tableOf($attr->targetEntity);
         $qb2 = clone $this->qb;
         $relatedEntity = $qb2->select()
@@ -1046,6 +1322,7 @@ abstract class EntityRepository
 
         $prop->setValue($entity, $relatedEntity ?: null);
     }
+
 
     /**
      * Load a OneToOne relationship.
@@ -1067,29 +1344,19 @@ abstract class EntityRepository
     {
         $prop->setAccessible(true);
         $entityId = $this->getEntityId($entity);
-
         if (!$entityId) {
             $prop->setValue($entity, []);
             return;
         }
 
-        // Find the FK column in the target entity
-        $targetRef = new ReflectionClass($attr->targetEntity);
-        $fkColumn = null;
+        $targetTable = $this->tableOf($attr->targetEntity);
 
-        // Look for the inverse ManyToOne property
-        if ($attr->mappedBy) {
-            if ($targetRef->hasProperty($attr->mappedBy)) {
-                $fkColumn = $this->getRelationColumnName($attr->mappedBy);
-            }
-        }
-
-        if (!$fkColumn) {
+        if (!$attr->mappedBy) {
             $prop->setValue($entity, []);
             return;
         }
+        $fkColumn = $this->getRelationColumnName($attr->mappedBy, $targetTable);
 
-        $targetTable = $this->tableOf($attr->targetEntity);
         $qb = clone $this->qb;
         $related = $qb->select()
             ->from($targetTable)
@@ -1098,6 +1365,7 @@ abstract class EntityRepository
 
         $prop->setValue($entity, $related);
     }
+
 
     /**
      * Get entity ID value.
@@ -1150,29 +1418,25 @@ abstract class EntityRepository
      */
     private function cascadeDeleteRelations(int $id): void
     {
-        $rc = new \ReflectionClass($this->entityClass);
+        $rc  = new \ReflectionClass($this->entityClass);
         $pdo = $this->qb->pdo();
 
         foreach ($rc->getProperties() as $prop) {
             $propName = $prop->getName();
 
-            /*────────── Many-to-Many ──────────*/
+            // Many-to-Many: delete both sides where either column matches $id
             if ($prop->getAttributes(ManyToMany::class)) {
                 try {
                     [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
-
-                    // Use raw PDO for better control
-                    $sql = "DELETE FROM `{$jt}` WHERE `{$ownCol}` = ? OR `{$invCol}` = ?";
-
+                    $sql  = "DELETE FROM `{$jt}` WHERE `{$ownCol}` = ? OR `{$invCol}` = ?";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute([$id, $id]);
-                    $affected = $stmt->rowCount();
-
                 } catch (\Throwable $e) {
+                    // ignore: not fatal for delete
                 }
             }
 
-            /*────────── One-to-Many ───────────*/
+            // One-to-Many: FK sits on TARGET table; set it to NULL where it equals $id
             if ($o2m = $prop->getAttributes(OneToMany::class)) {
                 try {
                     /** @var OneToMany $meta */
@@ -1180,49 +1444,144 @@ abstract class EntityRepository
                     if (!$meta->mappedBy) {
                         continue;
                     }
-
-                    $fk  = $this->getRelationColumnName($meta->mappedBy);
                     $tbl = $this->tableOf($meta->targetEntity);
+                    $fk  = $this->getRelationColumnName($meta->mappedBy, $tbl);
 
-                    // Use raw PDO to set FK to NULL
-                    $sql = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
-
+                    $sql  = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute([$id]);
-
                 } catch (\Throwable $e) {
                     throw new \RuntimeException(
                         "Failed to cascade delete for OneToMany relation '$propName': " . $e->getMessage(),
-                        0, $e
+                        0,
+                        $e
                     );
                 }
             }
 
-            /*──────── One-to-One (inverse) ─────*/
+            // One-to-One (inverse): FK sits on TARGET table (inverse side)
             if ($o2o = $prop->getAttributes(OneToOne::class)) {
                 try {
                     /** @var OneToOne $meta */
                     $meta = $o2o[0]->newInstance();
                     if ($meta->mappedBy) {
-                        $fk  = $this->getRelationColumnName($meta->mappedBy);
                         $tbl = $this->tableOf($meta->targetEntity);
+                        $fk  = $this->getRelationColumnName($meta->mappedBy, $tbl);
 
-                        // Use raw PDO to set FK to NULL
-                        $sql = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
-
+                        $sql  = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
                         $stmt = $pdo->prepare($sql);
                         $stmt->execute([$id]);
                     } else {
-                        error_log("[Repository] Skipping O2O relation '$propName' - owning side");
+                        // owning side: FK on THIS table, nothing to null here for a delete of THIS row
+                        // (deleting THIS row automatically removes the owning-side FK)
                     }
                 } catch (\Throwable $e) {
                     throw new \RuntimeException(
                         "Failed to cascade delete for OneToOne relation '$propName': " . $e->getMessage(),
-                        0, $e
+                        0,
+                        $e
                     );
                 }
             }
         }
+    }
+
+
+    /**
+     * Resolve the FK column name for a relation property against an optional table.
+     * Strategy:
+     *  1) explicit map → return
+     *  2) build variants from the property name (camelCase, acronyms, Id suffix)
+     *  3) check exact matches against table columns (if available)
+     *  4) fuzzy match: underscore-insensitive prefix match on *_id columns
+     *  5) fallback to snake_case + '_id'
+     */
+    private function getRelationColumnName(string $propertyName, ?string $table = null): string
+    {
+        // 0) explicit mapping wins
+        if (isset($this->columnMap[$propertyName])) {
+            return $this->columnMap[$propertyName];
+        }
+
+        // Base: strip trailing Id/_id on the *property* (common on inverse sides)
+        $prop = $propertyName;
+        if (str_ends_with($prop, '_id')) {
+            $prop = substr($prop, 0, -3);
+        } elseif (preg_match('/Id$/', $prop)) {
+            $prop = substr($prop, 0, -2);
+        }
+
+        // Tokenize camelCase, keeping acronym runs together (e.g. IP, API, UUID)
+        $tokens = preg_split('/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/', $prop) ?: [$prop];
+
+        // Normalize tokens to lowercase (DB cols are usually lowercase)
+        $ltokens = array_map(fn($t) => strtolower($t), $tokens);
+
+        // Candidate builders
+        $snake     = implode('_', $ltokens);              // ip_pool
+        $noUnders  = implode('', $ltokens);               // ippool
+        $camelLike = $propertyName . '_id';               // listGroup_id (DB uses camel + _id)
+        $camelId   = $propertyName . 'Id';                // companyId (DB uses camel + Id)
+
+        // Heuristic: merge leading short acronym-ish token with next (ip+pool → ippool)
+        $merged = $ltokens;
+        if (count($ltokens) >= 2 && strlen($ltokens[0]) <= 3) {
+            $merged = [$ltokens[0] . $ltokens[1], ...array_slice($ltokens, 2)];
+        }
+        $mergedSnake    = implode('_', $merged);          // ippool
+        $mergedNoUnders = implode('', $merged);           // ippool
+
+        // Full candidate list (ordered by likelihood)
+        $candidates = array_values(array_unique([
+            $snake . '_id',           // ip_pool_id
+            $noUnders . '_id',        // ippool_id   (handles your ipPool → ippool_id)
+            $mergedSnake . '_id',     // ippool_id   (duplicate-safe due to unique())
+            $mergedNoUnders . '_id',  // ippool_id
+            $camelLike,               // listGroup_id
+            $camelId,                 // companyId
+            $prop . '_id',            // company_id (if prop was "company" after stripping)
+            // rare but cheap:
+            $snake . 'id',            // ip_poolid
+            $noUnders . 'id',         // ippoolid
+        ]));
+
+        // If we can inspect the table, try to find an exact match
+        $table ??= $this->table;
+        if ($table) {
+            $cols = $this->listTableColumns($table);          // exact case from information_schema when possible
+            if ($cols) {
+                // 1) exact match
+                foreach ($candidates as $cand) {
+                    if (in_array($cand, $cols, true)) {
+                        return $this->columnMap[$propertyName] = $cand;
+                    }
+                }
+
+                // 2) fuzzy: pick a column that ends with _id and whose prefix,
+                //    after removing underscores, equals our property base (also underscore-free)
+                $targetKey = preg_replace('/_+/', '', $noUnders); // 'ippool'
+                $best = null;
+
+                foreach ($cols as $col) {
+                    if (!str_ends_with($col, '_id')) {
+                        continue;
+                    }
+                    $prefix = substr($col, 0, -3);                 // drop '_id'
+                    $prefixKey = preg_replace('/_+/', '', strtolower($prefix));
+                    if ($prefixKey === $targetKey) {
+                        $best = $col;
+                        break;
+                    }
+                }
+
+                if ($best !== null) {
+                    return $this->columnMap[$propertyName] = $best;
+                }
+            }
+        }
+
+        // Fallback
+        return $this->columnMap[$propertyName] = $snake . '_id';
     }
 
     /**
