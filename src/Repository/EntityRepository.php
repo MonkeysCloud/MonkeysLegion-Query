@@ -33,6 +33,11 @@ abstract class EntityRepository
     // cache: tableName => array<string> columns
     private array $tableColumnsCache = [];
 
+    private static array $reservedIdents = [
+        'key','keys','group','order','index','primary','constraint','references',
+        'table','column','value','values'
+    ];
+
     public function __construct(public QueryBuilder $qb) {}
 
     /**
@@ -1593,32 +1598,60 @@ abstract class EntityRepository
     {
         // explicit override first
         if (isset($this->columnMap[$key])) {
-            return $this->columnMap[$key];
+            return $this->quoteIfReserved($this->columnMap[$key]);
         }
 
-        // already looks like a concrete column
-        if (str_ends_with($key, '_id') || str_contains($key, '.')) {
-            return $key;
+        // already concrete column form? still ensure quoting if reserved
+        if (str_contains($key, '.')) {
+            // handle alias.column (quote the column part if needed)
+            [$left, $right] = explode('.', $key, 2);
+            return $left . '.' . $this->quoteIfReserved($right);
+        }
+
+        if (str_ends_with($key, '_id')) {
+            return $this->quoteIfReserved($key);
         }
 
         // if $key is a property on the entity and it's a relation, convert to FK
         $rc = new \ReflectionClass($this->entityClass);
         if ($rc->hasProperty($key)) {
             $prop = $rc->getProperty($key);
-            if ($prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class)
-                || ($attr = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\OneToOne::class))
-                && $attr[0]->newInstance()->mappedBy === null /* owning side */
-            ) {
-                // Default relation FK rule: snake(prop) + '_id'
-                $defaultFk = $this->getRelationColumnName($key);
 
-                // If a map exists for that property, honor it (e.g. 'ipPool' => 'ippool')
-                return $this->columnMap[$key] ?? $defaultFk;
+            $isOwningOneToOne = false;
+            if ($oneToOneAttrs = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\OneToOne::class)) {
+                $isOwningOneToOne = ($oneToOneAttrs[0]->newInstance()->mappedBy === null);
+            }
+
+            if ($prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class) || $isOwningOneToOne) {
+                $fk = $this->getRelationColumnName($key);
+                // respect explicit map for that property if present
+                $fk = $this->columnMap[$key] ?? $fk;
+                return $this->quoteIfReserved($fk);
             }
         }
 
-        // plain field
-        return $key;
+        // plain field on this table
+        return $this->quoteIfReserved($key);
+    }
+
+    private function quoteIfReserved(string $ident): string
+    {
+        // already quoted or an expression — leave as-is
+        if ($ident === '' || str_contains($ident, '`') || strpbrk($ident, " \t\n\r()")) {
+            return $ident;
+        }
+
+        // if alias.column sneaks in here, quote the right-hand side only
+        if (str_contains($ident, '.')) {
+            [$l, $r] = explode('.', $ident, 2);
+            return $l . '.' . $this->quoteIfReserved($r);
+        }
+
+        // simple identifier: quote if in reserved set
+        if (in_array(strtolower($ident), self::$reservedIdents, true)) {
+            return '`' . $ident . '`';
+        }
+        return $ident;
     }
 
     /**
