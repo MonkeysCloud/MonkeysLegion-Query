@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Repository;
@@ -24,8 +25,10 @@ use ReflectionProperty;
 abstract class EntityRepository
 {
     protected string $table;
+    private array $tables;
     protected string $entityClass;
     protected array $columnMap = [];
+    protected HydrationContext $context;
 
     // Track original values to detect changes
     private array $originalValues = [];
@@ -34,11 +37,24 @@ abstract class EntityRepository
     private array $tableColumnsCache = [];
 
     private static array $reservedIdents = [
-        'key','keys','group','order','index','primary','constraint','references',
-        'table','column','value','values'
+        'key',
+        'keys',
+        'group',
+        'order',
+        'index',
+        'primary',
+        'constraint',
+        'references',
+        'table',
+        'column',
+        'value',
+        'values'
     ];
 
-    public function __construct(public QueryBuilder $qb) {}
+    public function __construct(public QueryBuilder $qb)
+    {
+        $this->context = new HydrationContext(2);
+    }
 
     /**
      * Find a single entity by primary key.
@@ -86,6 +102,7 @@ abstract class EntityRepository
      */
     public function findOneBy(array $criteria, bool $loadRelations = true): ?object
     {
+        error_log("findOneBy");
         $results = $this->findBy($criteria, [], 1, null, $loadRelations);
         if (!empty($results)) {
             $this->storeOriginalValues($results[0]);
@@ -109,6 +126,7 @@ abstract class EntityRepository
         int|null $offset = null,
         bool $loadRelations = true
     ): array {
+        error_log("findBy");
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
 
@@ -135,7 +153,7 @@ abstract class EntityRepository
                 $entityKey = get_class($entity) . ':' . $entityId;
 
                 // Mark this entity as being loaded
-                $loadedEntities[$entityKey] = true;
+                $loadedEntities[$entityKey] = $entity;
 
                 // Load relations with protection against circular references
                 $this->loadRelationsWithGuard($entity, $loadedEntities);
@@ -266,14 +284,14 @@ abstract class EntityRepository
                 error_log('' . get_class($val) . ' is not a DateTime, checking for ManyToOne');
                 throw new \LogicException(
                     "Missing FK column `$col` for relation `{$prop->getName()}` on `{$this->table}`. " .
-                    "Did you annotate the property with #[ManyToOne] and map the column correctly?"
+                        "Did you annotate the property with #[ManyToOne] and map the column correctly?"
                 );
             }
             if ($data[$col] === null) {
                 error_log('' . get_class($val) . ' is not a DateTime, checking for ManyToOne');
                 throw new \LogicException(
                     "FK `$col` is NULL even though relation `{$prop->getName()}` is set. " .
-                    "Check that the related entity has an initialized id."
+                        "Check that the related entity has an initialized id."
                 );
             }
         }
@@ -343,11 +361,11 @@ abstract class EntityRepository
 
         // ——— normalize scalars
         foreach ($data as $key => $value) {
-            if     ($value instanceof \DateTimeInterface) $data[$key] = $value->format('Y-m-d H:i:s');
+            if ($value instanceof \DateTimeInterface) $data[$key] = $value->format('Y-m-d H:i:s');
             elseif (is_bool($value))                      $data[$key] = $value ? 1 : 0;
             elseif (is_float($value))                     $data[$key] = (string)$value;
-            elseif (is_array($value))                     $data[$key] = json_encode($value, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-            elseif (is_object($value))                    throw new \InvalidArgumentException("Column `$key` holds object ".get_class($value));
+            elseif (is_array($value))                     $data[$key] = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            elseif (is_object($value))                    throw new \InvalidArgumentException("Column `$key` holds object " . get_class($value));
         }
 
         // ——— table columns
@@ -360,9 +378,13 @@ abstract class EntityRepository
             foreach ($ref->getProperties() as $prop) {
                 $attrs = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class);
                 if (!$attrs) continue;
-                try { $fkColsFromProps[] = $this->getRelationColumnName($prop->getName()); } catch (\Throwable $ignored) {}
+                try {
+                    $fkColsFromProps[] = $this->getRelationColumnName($prop->getName());
+                } catch (\Throwable $ignored) {
+                }
             }
-        } catch (\Throwable $ignored) {}
+        } catch (\Throwable $ignored) {
+        }
 
         // ——— remap odd keys to real columns
         $data = $this->remapColumnsToTable($data, $colsInTable);
@@ -370,7 +392,7 @@ abstract class EntityRepository
         // ——— validate columns exist
         $unknown = array_diff(array_keys($data), $colsInTable);
         if ($unknown) {
-            throw new \RuntimeException("Unknown columns for `{$this->table}`: ".implode(', ', $unknown));
+            throw new \RuntimeException("Unknown columns for `{$this->table}`: " . implode(', ', $unknown));
         }
 
         // ——— DB handle
@@ -386,7 +408,7 @@ abstract class EntityRepository
         static $___tablesCache = [];
 
         // Load all table names in schema once
-        $loadTables = function(string $schema) use ($pdo, &$___tablesCache): array {
+        $loadTables = function (string $schema) use ($pdo, &$___tablesCache): array {
             if (isset($___tablesCache[$schema])) return $___tablesCache[$schema];
             $st = $pdo->prepare("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = :s");
             $st->execute([':s' => $schema]);
@@ -394,21 +416,23 @@ abstract class EntityRepository
         };
 
         // Resolve actual table name (handles underscores→none, case-insensitive)
-        $resolveTable = function(string $schema, string $name) use ($loadTables): ?string {
+        $resolveTable = function (string $schema, string $name) use ($loadTables): ?string {
             $tables = $loadTables($schema);
             $map = [];
-            foreach ($tables as $t) { $map[strtolower($t)] = $t; }
+            foreach ($tables as $t) {
+                $map[strtolower($t)] = $t;
+            }
             $needle = strtolower($name);
             if (isset($map[$needle])) return $map[$needle];
-            $needleNoUnderscore = str_replace('_','', $needle);
+            $needleNoUnderscore = str_replace('_', '', $needle);
             foreach ($map as $low => $orig) {
-                if (str_replace('_','',$low) === $needleNoUnderscore) return $orig;
+                if (str_replace('_', '', $low) === $needleNoUnderscore) return $orig;
             }
             return null;
         };
 
         // FKs: COLUMN_NAME => ['ref_schema','ref_table','ref_col','constraint_name']
-        $loadFks = function(string $schema, string $table) use ($pdo, &$___fkCache): array {
+        $loadFks = function (string $schema, string $table) use ($pdo, &$___fkCache): array {
             $key = "{$schema}.{$table}";
             if (isset($___fkCache[$key])) return $___fkCache[$key];
             $sql = "SELECT COLUMN_NAME, CONSTRAINT_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
@@ -429,7 +453,7 @@ abstract class EntityRepository
         };
 
         // Unique indexes (incl. PRIMARY)
-        $loadUniqueIndexes = function(string $schema, string $table) use ($pdo, &$___uniqueCache): array {
+        $loadUniqueIndexes = function (string $schema, string $table) use ($pdo, &$___uniqueCache): array {
             $key = "{$schema}.{$table}";
             if (isset($___uniqueCache[$key])) return $___uniqueCache[$key];
             $sql = "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, SEQ_IN_INDEX
@@ -449,19 +473,23 @@ abstract class EntityRepository
         };
 
         // Select id by composite key
-        $selectIdByKey = function(array $key) {
+        $selectIdByKey = function (array $key) {
             $q = (clone $this->qb)->select(['id'])->from($this->table);
-            if (method_exists($q,'useWrite')) $q->useWrite();
+            if (method_exists($q, 'useWrite')) $q->useWrite();
             $first = true;
             foreach ($key as $c => $v) {
-                if ($first) { $q->where($c,'=',$v); $first=false; }
-                else        { $q->andWhere($c,'=',$v); }
+                if ($first) {
+                    $q->where($c, '=', $v);
+                    $first = false;
+                } else {
+                    $q->andWhere($c, '=', $v);
+                }
             }
             return $q->fetch();
         };
 
         // Self-heal FK (when 1452 is thrown due to wrong referenced table name)
-        $attemptRepairFk = function(string $schema, string $table, array $fkMap) use ($pdo, $resolveTable): bool {
+        $attemptRepairFk = function (string $schema, string $table, array $fkMap) use ($pdo, $resolveTable): bool {
             foreach ($fkMap as $col => $meta) {
                 $refSchema   = $meta['ref_schema'] ?: $schema;
                 $refTableOrg = $meta['ref_table'] ?? '';
@@ -474,7 +502,7 @@ abstract class EntityRepository
 
                 // verify resolved table really exists
                 $chk = $pdo->prepare("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=:s AND TABLE_NAME=:t");
-                $chk->execute([':s'=>$refSchema, ':t'=>$resolved]);
+                $chk->execute([':s' => $refSchema, ':t' => $resolved]);
                 if (!$chk->fetchColumn()) continue;
 
                 try {
@@ -497,18 +525,21 @@ abstract class EntityRepository
         $candidateUnique = [];
         foreach ($uniqueIdx as $idx) {
             $cols = $idx['columns'];
-            $isOnlyId = (count($cols) === 1 && $cols[0]==='id');
+            $isOnlyId = (count($cols) === 1 && $cols[0] === 'id');
             if ($idx['is_primary'] && $isOnlyId) continue;
             if (count(array_diff($cols, $dataKeys)) === 0) {
                 $fkOnly = count(array_diff($cols, array_keys($fkMap))) === 0;
                 $bonus = 0;
                 foreach ($cols as $c) {
-                    if (stripos($c,'email') !== false || stripos($c,'uuid') !== false || stripos($c,'external') !== false) { $bonus += 2; break; }
+                    if (stripos($c, 'email') !== false || stripos($c, 'uuid') !== false || stripos($c, 'external') !== false) {
+                        $bonus += 2;
+                        break;
+                    }
                 }
-                $candidateUnique[] = ['name'=>$idx['name'],'cols'=>$cols,'fkOnly'=>$fkOnly,'arity'=>count($cols),'bonus'=>$bonus];
+                $candidateUnique[] = ['name' => $idx['name'], 'cols' => $cols, 'fkOnly' => $fkOnly, 'arity' => count($cols), 'bonus' => $bonus];
             }
         }
-        usort($candidateUnique, function($a,$b){
+        usort($candidateUnique, function ($a, $b) {
             if ($a['fkOnly'] !== $b['fkOnly']) return $a['fkOnly'] ? 1 : -1; // prefer non-FK-only
             if ($a['arity']  !== $b['arity'])  return $b['arity'] <=> $a['arity'];
             if ($a['bonus']  !== $b['bonus'])  return $b['bonus'] <=> $a['bonus'];
@@ -519,31 +550,39 @@ abstract class EntityRepository
 
         // Try to match existing row by natural key
         if (!$isUpdate && $naturalKeyCols) {
-            $keyMap = []; foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
+            $keyMap = [];
+            foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
             $existing = $selectIdByKey($keyMap);
             if ($existing && isset($existing->id)) {
-                $isUpdate = true; $data['id'] = (int)$existing->id;
+                $isUpdate = true;
+                $data['id'] = (int)$existing->id;
             }
         }
 
         // ——— UPDATE path
         if (!empty($data['id'])) {
-            $id = (int)$data['id']; unset($data['id']);
+            $id = (int)$data['id'];
+            unset($data['id']);
             if (empty($data)) return 0;
-            $setParts = []; foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
-            $sql = "UPDATE `{$this->table}` SET ".implode(', ', $setParts)." WHERE `id` = :_id";
+            $setParts = [];
+            foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
+            $sql = "UPDATE `{$this->table}` SET " . implode(', ', $setParts) . " WHERE `id` = :_id";
             try {
                 $stmt = $pdo->prepare($sql);
-                foreach ($data as $col => $val) { $stmt->bindValue(":{$col}", $val); }
+                foreach ($data as $col => $val) {
+                    $stmt->bindValue(":{$col}", $val);
+                }
                 $stmt->bindValue(":_id", $id, \PDO::PARAM_INT);
                 $stmt->execute();
                 $this->storeOriginalValues($entity);
                 return $stmt->rowCount();
-            } catch (\PDOException $e) { throw $e; }
+            } catch (\PDOException $e) {
+                throw $e;
+            }
         }
 
         // ——— INSERT / UPSERT
-        if (empty($data)) throw new \LogicException("No data to INSERT for `{$this->table}` and entity ".get_class($entity));
+        if (empty($data)) throw new \LogicException("No data to INSERT for `{$this->table}` and entity " . get_class($entity));
 
         // Soft FK preflight with resolution (log-only previously; now silent — DB enforces truth)
         $fkCols = array_keys($fkMap);
@@ -551,14 +590,14 @@ abstract class EntityRepository
         foreach ($fkCols as $col) {
             if (!array_key_exists($col, $data)) continue;
             try {
-                $meta = $fkMap[$col] ?? ['ref_schema'=>$schema, 'ref_table'=>preg_replace('/_id$/','',$col), 'ref_col'=>'id'];
+                $meta = $fkMap[$col] ?? ['ref_schema' => $schema, 'ref_table' => preg_replace('/_id$/', '', $col), 'ref_col' => 'id'];
                 $refSchema = $meta['ref_schema'] ?? $schema;
-                $refTableOrig = $meta['ref_table'] ?? preg_replace('/_id$/','',$col);
+                $refTableOrig = $meta['ref_table'] ?? preg_replace('/_id$/', '', $col);
                 $refTable = $resolveTable($refSchema, $refTableOrig) ?: $refTableOrig;
                 $refCol   = $meta['ref_col'] ?? 'id';
 
                 $q = (clone $this->qb)->select([$refCol])->from($refTable)->where($refCol, '=', $data[$col]);
-                if (method_exists($q,'useWrite')) $q->useWrite();
+                if (method_exists($q, 'useWrite')) $q->useWrite();
                 $q->fetch(); // ignore result; DB will enforce for real
             } catch (\Throwable $fkEx) {
                 // soft-skip any preflight errors
@@ -575,7 +614,9 @@ abstract class EntityRepository
             implode(',', $placeholders)
         );
 
-        if ($chosenUnique && !$upsert) { $upsert = true; }
+        if ($chosenUnique && !$upsert) {
+            $upsert = true;
+        }
         if ($upsert && $chosenUnique) {
             $sql .= " ON DUPLICATE KEY UPDATE `id` = LAST_INSERT_ID(`id`)";
             if (in_array('subscribed_at', $cols, true)) $sql .= ", `subscribed_at` = VALUES(`subscribed_at`)";
@@ -587,7 +628,9 @@ abstract class EntityRepository
         while (true) {
             try {
                 $stmt = $pdo->prepare($sql);
-                foreach ($data as $col => $val) { $stmt->bindValue(":{$col}", $val); }
+                foreach ($data as $col => $val) {
+                    $stmt->bindValue(":{$col}", $val);
+                }
                 $stmt->execute();
                 $id = (int)$pdo->lastInsertId();
                 break;
@@ -596,19 +639,24 @@ abstract class EntityRepository
 
                 // Duplicate → update by natural key
                 if ($mysqlCode === 1062 && $naturalKeyCols) {
-                    $keyMap = []; foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
+                    $keyMap = [];
+                    foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
                     $row = $selectIdByKey($keyMap);
                     if ($row && isset($row->id)) {
                         $existingId = (int)$row->id;
-                        $setParts = []; foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
-                        $updateSql = "UPDATE `{$this->table}` SET ".implode(', ', $setParts)." WHERE `id` = :_id";
+                        $setParts = [];
+                        foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
+                        $updateSql = "UPDATE `{$this->table}` SET " . implode(', ', $setParts) . " WHERE `id` = :_id";
                         $stmt = $pdo->prepare($updateSql);
-                        foreach ($data as $col => $val) { $stmt->bindValue(":{$col}", $val); }
+                        foreach ($data as $col => $val) {
+                            $stmt->bindValue(":{$col}", $val);
+                        }
                         $stmt->bindValue(":_id", $existingId, \PDO::PARAM_INT);
                         $stmt->execute();
 
                         if (property_exists($entity, 'id')) {
-                            $rp = new \ReflectionProperty($entity, 'id'); $rp->setAccessible(true);
+                            $rp = new \ReflectionProperty($entity, 'id');
+                            $rp->setAccessible(true);
                             $rp->setValue($entity, $existingId);
                         }
                         $this->storeOriginalValues($entity);
@@ -631,21 +679,30 @@ abstract class EntityRepository
         // ——— VERIFY
         $verifyRow = null;
         if ($naturalKeyCols) {
-            $keyMap = []; foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
+            $keyMap = [];
+            foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
             try {
                 $v = (clone $this->qb);
-                if (method_exists($v,'useWrite')) $v->useWrite();
+                if (method_exists($v, 'useWrite')) $v->useWrite();
                 $verify = $v->select(['id'])->from($this->table)->where(array_key_first($keyMap), '=', reset($keyMap));
                 $first = true;
-                foreach ($keyMap as $k => $vv) { if ($first) { $first=false; continue; } $verify->andWhere($k,'=',$vv); }
+                foreach ($keyMap as $k => $vv) {
+                    if ($first) {
+                        $first = false;
+                        continue;
+                    }
+                    $verify->andWhere($k, '=', $vv);
+                }
                 $verifyRow = $verify->fetch();
-            } catch (\Exception $ex) { /* ignore */ }
+            } catch (\Exception $ex) { /* ignore */
+            }
         } elseif ($id > 0) {
             try {
                 $v = (clone $this->qb);
-                if (method_exists($v,'useWrite')) $v->useWrite();
-                $verifyRow = $v->select(['id'])->from($this->table)->where('id','=',$id)->fetch();
-            } catch (\Exception $ex) { /* ignore */ }
+                if (method_exists($v, 'useWrite')) $v->useWrite();
+                $verifyRow = $v->select(['id'])->from($this->table)->where('id', '=', $id)->fetch();
+            } catch (\Exception $ex) { /* ignore */
+            }
         }
 
         if (!$verifyRow && $id <= 0) {
@@ -653,7 +710,8 @@ abstract class EntityRepository
         }
 
         if (property_exists($entity, 'id')) {
-            $ref = new \ReflectionProperty($entity, 'id'); $ref->setAccessible(true);
+            $ref = new \ReflectionProperty($entity, 'id');
+            $ref->setAccessible(true);
             $ref->setValue($entity, (int)($verifyRow->id ?? $id));
         }
 
@@ -724,7 +782,6 @@ abstract class EntityRepository
             $stmt = $pdo->prepare($sql);
             $stmt->execute([$id]);
             return $stmt->rowCount();
-
         } catch (\Throwable $e) {
             throw $e;
         }
@@ -846,6 +903,7 @@ abstract class EntityRepository
      */
     public function findByRelation(string $relationProp, int|string $relatedId): array
     {
+        error_log("findByRelation");
         $rclass = new ReflectionClass($this->entityClass);
 
         if (! $rclass->hasProperty($relationProp)) {
@@ -1066,15 +1124,38 @@ abstract class EntityRepository
      */
     protected function loadRelations(object $entity, array $loadedClasses = []): void
     {
+        error_log("");
+        error_log("");
+        error_log("loadRelations for " . get_class($entity));
+        $entityId = $this->getEntityId($entity);
+        $entityClass = get_class($entity);
+        error_log("Entity class $entityClass for table {$this->tableOf($entityClass)}");
+        $this->tables[$this->tableOf($entityClass)] = $entityClass;
+
+        // Initialize depth to 0 for root entities if not set
+        if (!$this->context->hasInstance($entityClass, $entityId)) {
+            error_log("Setting initial depth 0 for root entity " . $entityClass . ":" . $entityId);
+            $this->context->registerInstance($entityClass, $entityId, $entity);
+            $this->context->setDepth($entity, 0);
+        }
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
+
+        if ($currEntityDepth >= $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity) . ", skipping relation loading");
+            return;
+        }
+
         $ref = new ReflectionClass($entity);
 
-        // Track this entity class to prevent circular loading
-        $entityClass = get_class($entity);
-        $loadedClasses[$entityClass] = true;
+        // Add debug to see all properties and attributes
+        error_log("Looking for relations on " . count($ref->getProperties()) . " properties");
 
         foreach ($ref->getProperties() as $prop) {
             // Handle ManyToOne relationships
             if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
+                error_log("Found ManyToOne on " . $prop->getName());
                 /** @var ManyToOne $attr */
                 $attr = $manyToOneAttrs[0]->newInstance();
                 $this->loadManyToOne($entity, $prop, $attr);
@@ -1091,6 +1172,7 @@ abstract class EntityRepository
 
             // Handle OneToMany relationships
             if ($oneToManyAttrs = $prop->getAttributes(OneToMany::class)) {
+                error_log("Found OneToMany on " . $prop->getName());
                 /** @var OneToMany $attr */
                 $attr = $oneToManyAttrs[0]->newInstance();
                 $this->loadOneToMany($entity, $prop, $attr);
@@ -1098,11 +1180,14 @@ abstract class EntityRepository
 
             // Handle ManyToMany relationships
             if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
+                error_log("call then loadManyToManyWithGuard");
                 /** @var ManyToMany $attr */
                 $attr = $manyToManyAttrs[0]->newInstance();
                 $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedClasses);
             }
         }
+        error_log("");
+        error_log("");
     }
 
     /**
@@ -1113,6 +1198,14 @@ abstract class EntityRepository
      */
     protected function loadRelationsWithGuard(object $entity, array &$loadedEntities = []): void
     {
+        error_log("loadRelationsWithGuard");
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        if ($currEntityDepth > $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity));
+            return;
+        }
+
         $ref = new ReflectionClass($entity);
 
         foreach ($ref->getProperties() as $prop) {
@@ -1165,6 +1258,17 @@ abstract class EntityRepository
      */
     private function loadManyToOneWithGuard(object $entity, ReflectionProperty $prop, ManyToOne $attr, array &$loadedEntities): void
     {
+        error_log("loadManyToOneWithGuard for " . get_class($entity) . "->" . $prop->getName());
+
+        // Get current entity depth
+        $currEntityDepth = $this->context->getDepth($entity);
+        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
+
+        if ($currEntityDepth >= $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity) . ", skipping relation load");
+            return;
+        }
+
         $prop->setAccessible(true);
 
         // FK column lives on THIS table
@@ -1190,6 +1294,13 @@ abstract class EntityRepository
             return;
         }
 
+        if ($this->context->hasInstance($attr->targetEntity, $fkValue)) {
+            $instance = $this->context->getInstance($attr->targetEntity, $fkValue);
+            $prop->setValue($entity, $instance);
+            $this->context->setDepth($instance, $this->context->getDepth($instance) + 1);
+            return;
+        }
+
         // Avoid circular re-load
         $relatedKey = $attr->targetEntity . ':' . $fkValue;
         if (isset($loadedEntities[$relatedKey])) {
@@ -1205,15 +1316,39 @@ abstract class EntityRepository
             ->where('id', '=', $fkValue)
             ->fetch($attr->targetEntity);
 
+        // When loading a related entity, set its depth properly based on parent
+        if ($relatedEntity) {
+            error_log("Setting related entity depth to parent+1: " . ($currEntityDepth + 1));
+            $this->context->registerInstance($attr->targetEntity, $fkValue, $relatedEntity);
+            $this->context->setDepth($relatedEntity, $currEntityDepth + 1);
+
+            // Only load relations of related entity if we're not at max depth
+            if (($currEntityDepth + 1) < $this->context->maxDepth) {
+                $newLoadedEntities = $loadedEntities;
+                $newLoadedEntities[$attr->targetEntity . ':' . $fkValue] = $relatedEntity;
+                $this->loadRelationsWithGuard($relatedEntity, $newLoadedEntities);
+            } else {
+                error_log("Not loading relations for " . get_class($relatedEntity) . " because it would exceed max depth");
+            }
+        }
+
+        // Set the property value
         $prop->setValue($entity, $relatedEntity ?: null);
     }
-
 
     /**
      * Load OneToOne with guard
      */
     private function loadOneToOneWithGuard(object $entity, ReflectionProperty $prop, OneToOne $attr, array &$loadedEntities): void
     {
+        error_log("loadOneToOneWithGuard");
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        if ($currEntityDepth > $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity));
+            return;
+        }
+
         // Same as ManyToOne for owning side
         $this->loadManyToOneWithGuard($entity, $prop, new ManyToOne(
             targetEntity: $attr->targetEntity,
@@ -1227,6 +1362,14 @@ abstract class EntityRepository
      */
     private function loadOneToManyWithGuard(object $entity, ReflectionProperty $prop, OneToMany $attr, array &$loadedEntities): void
     {
+        error_log("loadOneToManyWithGuard");
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        if ($currEntityDepth > $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity));
+            return;
+        }
+
         $prop->setAccessible(true);
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
@@ -1252,7 +1395,6 @@ abstract class EntityRepository
         $prop->setValue($entity, $related);
     }
 
-
     /**
      * Load ManyToMany with guard
      */
@@ -1260,35 +1402,62 @@ abstract class EntityRepository
         object             $entity,
         ReflectionProperty $prop,
         ManyToMany         $attr,
-        array              &$loadedEntities
+        array              &$loadedEntities,
     ): void {
+        error_log("");
+        error_log("=== loadManyToManyWithGuard START for entity: " . get_class($entity) . " property: " . $prop->getName() . " ===");
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
+        if ($currEntityDepth > $this->context->maxDepth) {
+            error_log("Max depth reached, skipping ManyToMany load for " . get_class($entity));
+            return;
+        }
+
         $prop->setAccessible(true);
 
         $ownId = $this->getEntityId($entity);
+        error_log("Entity ID: " . ($ownId ?: "null"));
         if (!$ownId) {
+            error_log("Entity ID is null, setting empty array on property " . $prop->getName());
             $prop->setValue($entity, []);
             return;
         }
 
         try {
             [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
+            error_log("Join table meta resolved: joinTable=$jt, ownCol=$ownCol, invCol=$invCol");
         } catch (\Exception $e) {
+            error_log("Failed to resolve join table meta for property " . $prop->getName() . ": " . $e->getMessage());
             $prop->setValue($entity, []);
             return;
         }
 
         $targetClass = $attr->targetEntity;
         $targetTable = $this->tableOf($targetClass);
+        error_log("Target entity: $targetClass, target table: $targetTable");
 
         $qb = clone $this->qb;
+        error_log("Executing ManyToMany query: SELECT t.* FROM $targetTable t "
+            . "JOIN $jt j ON j.$invCol = t.id WHERE j.$ownCol = $ownId");
+
         $rows = $qb->select(['t.*'])
             ->from($targetTable, 't')
             ->join($jt, 'j', "j.$invCol", '=', 't.id')
             ->where("j.$ownCol", '=', $ownId)
             ->fetchAll($targetClass);
 
+        if (!$rows) {
+            error_log("No related rows found for $targetClass (property: " . $prop->getName() . ")");
+        } else {
+            error_log("Found " . count($rows) . " related $targetClass entities");
+        }
+
         // Don't recursively load relations for ManyToMany to prevent circular references
         $prop->setValue($entity, $rows);
+
+        error_log("=== loadManyToManyWithGuard END for property: " . $prop->getName() . " ===");
+        error_log("");
     }
 
     /**
@@ -1296,44 +1465,122 @@ abstract class EntityRepository
      */
     private function loadManyToOne(object $entity, ReflectionProperty $prop, ManyToOne $attr): void
     {
+        error_log("");
+        error_log("=== loadManyToOne START for entity: " . get_class($entity) . " property: " . $prop->getName() . " ===");
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
+
+        if ($currEntityDepth >= $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity) . ", skipping relation load");
+            return;
+        }
+
         $prop->setAccessible(true);
 
+        // Determine FK column
         $fkColumn = $this->getRelationColumnName($prop->getName());
+        error_log("FK column resolved: $fkColumn");
+        error_log(print_r($entity, true));
 
+        // Get this entity's ID
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
+            error_log("Entity ID is null, setting property to null and returning.");
             $prop->setValue($entity, null);
             return;
         }
+        error_log("Entity ID: $entityId");
 
+        // Fetch the FK value from the current table
         $qb = clone $this->qb;
+        $targetTable = $this->tableOf(get_class($entity));
+        error_log("Querying table $targetTable");
+        error_log("with FkCol $fkColumn");
+        error_log("where id = $entityId for FK...");
         $row = $qb->select([$fkColumn])
-            ->from($this->table)
+            ->from($targetTable)
             ->where('id', '=', $entityId)
             ->fetch();
+        error_log(print_r($row, true));
 
         $fkValue = $row ? ($row->$fkColumn ?? null) : null;
+        error_log("fk value => " . $fkValue);
+
         if ($fkValue === null) {
+            error_log("FK value is null, setting property to null.");
             $prop->setValue($entity, null);
             return;
         }
+        error_log("FK value found: $fkValue");
 
+        // Check if the target entity is already loaded in the context
+        error_log("checking {$attr->targetEntity} with fk $fkValue");
+        if ($this->context->hasInstance($attr->targetEntity, $fkValue)) {
+            $instance = $this->context->getInstance($attr->targetEntity, $fkValue);
+            $prop->setValue($entity, $instance);
+
+            // Fix: Don't increment instance depth, set it relative to current entity
+            $newDepth = $currEntityDepth + 1;
+            $existingDepth = $this->context->getDepth($instance);
+            error_log("Reusing cached entity: current depth {$existingDepth}, new depth would be {$newDepth}");
+
+            // Only update depth if the new path is shallower
+            if ($newDepth < $existingDepth) {
+                error_log("Updating cached entity depth to {$newDepth} (was {$existingDepth})");
+                $this->context->setDepth($instance, $newDepth);
+            }
+            return;
+        }
+
+        // Fetch the related entity from its table
         $targetTable = $this->tableOf($attr->targetEntity);
+        error_log("Fetching related entity from table: $targetTable");
         $qb2 = clone $this->qb;
         $relatedEntity = $qb2->select()
             ->from($targetTable)
             ->where('id', '=', $fkValue)
             ->fetch($attr->targetEntity);
 
-        $prop->setValue($entity, $relatedEntity ?: null);
-    }
+        if ($relatedEntity) {
+            error_log("Related entity fetched successfully: " . get_class($relatedEntity));
 
+            // Register this entity in the context with proper depth
+            $newDepth = $currEntityDepth + 1;
+            $this->context->registerInstance($attr->targetEntity, $fkValue, $relatedEntity);
+            $this->context->setDepth($relatedEntity, $newDepth);
+            error_log("Registered entity {$attr->targetEntity}:{$fkValue} with depth {$newDepth}");
+
+            // Recursively load relations for this entity if we're not at max depth
+            if ($newDepth < $this->context->maxDepth) {
+                error_log("Recursively loading relations for " . get_class($relatedEntity));
+                $this->loadRelations($relatedEntity);
+            } else {
+                error_log("Not loading relations for " . get_class($relatedEntity) . " because it would exceed max depth");
+            }
+        } else {
+            error_log("Related entity not found, setting property to null.");
+        }
+
+        // Set the property value
+        $prop->setValue($entity, $relatedEntity ?: null);
+
+        error_log("=== loadManyToOne END for property: " . $prop->getName() . " ===");
+        error_log("");
+    }
 
     /**
      * Load a OneToOne relationship.
      */
     private function loadOneToOne(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
+        error_log("loadOneToOneWithGuard");
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        if ($currEntityDepth > $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity));
+            return;
+        }
         // Same as ManyToOne for owning side
         $this->loadManyToOne($entity, $prop, new ManyToOne(
             targetEntity: $attr->targetEntity,
@@ -1347,6 +1594,18 @@ abstract class EntityRepository
      */
     private function loadOneToMany(object $entity, ReflectionProperty $prop, OneToMany $attr): void
     {
+        error_log("loadOneToMany for " . get_class($entity) . "->" . $prop->getName());
+
+        $currEntityDepth = $this->context->getDepth($entity);
+        error_log("OneToMany: parent entity depth: {$currEntityDepth}");
+
+        if ($currEntityDepth >= $this->context->maxDepth) {
+            error_log("Max depth reached in loadOneToMany for " . get_class($entity));
+            $prop->setAccessible(true);
+            $prop->setValue($entity, []);
+            return;
+        }
+
         $prop->setAccessible(true);
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
@@ -1361,6 +1620,7 @@ abstract class EntityRepository
             return;
         }
         $fkColumn = $this->getRelationColumnName($attr->mappedBy, $targetTable);
+        error_log("Looking for related {$attr->targetEntity} with {$fkColumn}={$entityId}");
 
         $qb = clone $this->qb;
         $related = $qb->select()
@@ -1368,9 +1628,29 @@ abstract class EntityRepository
             ->where($fkColumn, '=', $entityId)
             ->fetchAll($attr->targetEntity);
 
+        error_log("Found " . count($related) . " related entities");
         $prop->setValue($entity, $related);
-    }
 
+        // Set proper depth for related entities and load their relations
+        $newDepth = $currEntityDepth + 1;
+        if ($newDepth < $this->context->maxDepth) {
+            foreach ($related as $rel) {
+                $relId = $this->getEntityId($rel);
+                error_log("Registering related " . get_class($rel) . ":{$relId} with depth {$newDepth}");
+                $this->context->registerInstance($attr->targetEntity, $relId, $rel);
+                $this->context->setDepth($rel, $newDepth);
+
+                // Only load deeper relations if we're not at max depth
+                if ($newDepth < $this->context->maxDepth) {
+                    $this->loadRelations($rel);
+                } else {
+                    error_log("Max depth reached, not loading relations for " . get_class($rel));
+                }
+            }
+        } else {
+            error_log("Not loading relations for " . count($related) . " entities of type " . $attr->targetEntity . " - would exceed max depth");
+        }
+    }
 
     /**
      * Get entity ID value.
@@ -1490,7 +1770,6 @@ abstract class EntityRepository
             }
         }
     }
-
 
     /**
      * Resolve the FK column name for a relation property against an optional table.
@@ -1690,5 +1969,4 @@ abstract class EntityRepository
         }
         return $out;
     }
-
 }
