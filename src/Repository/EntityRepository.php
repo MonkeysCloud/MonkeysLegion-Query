@@ -102,7 +102,6 @@ abstract class EntityRepository
      */
     public function findOneBy(array $criteria, bool $loadRelations = true): ?object
     {
-        error_log("findOneBy");
         $results = $this->findBy($criteria, [], 1, null, $loadRelations);
         if (!empty($results)) {
             $this->storeOriginalValues($results[0]);
@@ -126,7 +125,6 @@ abstract class EntityRepository
         int|null $offset = null,
         bool $loadRelations = true
     ): array {
-        error_log("findBy");
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
 
@@ -903,7 +901,6 @@ abstract class EntityRepository
      */
     public function findByRelation(string $relationProp, int|string $relatedId): array
     {
-        error_log("findByRelation");
         $rclass = new ReflectionClass($this->entityClass);
 
         if (! $rclass->hasProperty($relationProp)) {
@@ -1125,38 +1122,27 @@ abstract class EntityRepository
      */
     protected function loadRelations(object $entity, array $loadedClasses = []): void
     {
-        error_log("");
-        error_log("");
-        error_log("loadRelations for " . get_class($entity));
         $entityId = $this->getEntityId($entity);
         $entityClass = get_class($entity);
-        error_log("Entity class $entityClass for table {$this->tableOf($entityClass)}");
         $this->tables[$this->tableOf($entityClass)] = $entityClass;
 
         // Initialize depth to 0 for root entities if not set
         if (!$this->context->hasInstance($entityClass, $entityId)) {
-            error_log("Setting initial depth 0 for root entity " . $entityClass . ":" . $entityId);
             $this->context->registerInstance($entityClass, $entityId, $entity);
             $this->context->setDepth($entity, 0);
         }
 
         $currEntityDepth = $this->context->getDepth($entity);
-        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
 
         if ($currEntityDepth >= $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity) . ", skipping relation loading");
             return;
         }
 
         $ref = new ReflectionClass($entity);
 
-        // Add debug to see all properties and attributes
-        error_log("Looking for relations on " . count($ref->getProperties()) . " properties");
-
         foreach ($ref->getProperties() as $prop) {
             // Handle ManyToOne relationships
             if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
-                error_log("Found ManyToOne on " . $prop->getName());
                 /** @var ManyToOne $attr */
                 $attr = $manyToOneAttrs[0]->newInstance();
                 $this->loadManyToOne($entity, $prop, $attr);
@@ -1164,7 +1150,6 @@ abstract class EntityRepository
 
             // Handle OneToOne relationships (owning side)
             if ($oneToOneAttrs = $prop->getAttributes(OneToOne::class)) {
-                error_log("Found OneToOne on " . $prop->getName());
                 $attr = $oneToOneAttrs[0]->newInstance();
 
                 if (!$attr->mappedBy) {
@@ -1178,7 +1163,6 @@ abstract class EntityRepository
 
             // Handle OneToMany relationships
             if ($oneToManyAttrs = $prop->getAttributes(OneToMany::class)) {
-                error_log("Found OneToMany on " . $prop->getName());
                 /** @var OneToMany $attr */
                 $attr = $oneToManyAttrs[0]->newInstance();
                 $this->loadOneToMany($entity, $prop, $attr);
@@ -1186,14 +1170,11 @@ abstract class EntityRepository
 
             // Handle ManyToMany relationships
             if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
-                error_log("call then loadManyToManyWithGuard");
                 /** @var ManyToMany $attr */
                 $attr = $manyToManyAttrs[0]->newInstance();
                 $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedClasses);
             }
         }
-        error_log("");
-        error_log("");
     }
 
     /**
@@ -1204,11 +1185,18 @@ abstract class EntityRepository
      */
     protected function loadRelationsWithGuard(object $entity, array &$loadedEntities = []): void
     {
-        error_log("loadRelationsWithGuard");
+        $entityClass = get_class($entity);
+        $entityId = $this->getEntityId($entity);
+
+        // Initialize depth to 0 for root entities if not already registered
+        if (!$this->context->hasInstance($entityClass, $entityId)) {
+            $this->context->registerInstance($entityClass, $entityId, $entity);
+            $this->context->setDepth($entity, 0);
+        }
 
         $currEntityDepth = $this->context->getDepth($entity);
+
         if ($currEntityDepth >= $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity));
             return;
         }
 
@@ -1216,40 +1204,40 @@ abstract class EntityRepository
 
         foreach ($ref->getProperties() as $prop) {
             try {
-                // Handle ManyToOne relationships
+                // ManyToOne
                 if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
                     /** @var ManyToOne $attr */
                     $attr = $manyToOneAttrs[0]->newInstance();
                     $this->loadManyToOneWithGuard($entity, $prop, $attr, $loadedEntities);
                 }
 
-                // Handle OneToOne relationships (owning side)
+                // OneToOne owning side
                 if ($oneToOneAttrs = $prop->getAttributes(OneToOne::class)) {
                     /** @var OneToOne $attr */
                     $attr = $oneToOneAttrs[0]->newInstance();
-                    if (!$attr->mappedBy) { // Only load if we're the owning side
+                    if (!$attr->mappedBy) {
                         $this->loadOneToOneWithGuard($entity, $prop, $attr, $loadedEntities);
+                    } else {
+                        $this->loadOneToOneInverse($entity, $prop, $attr); // <- correct loader
                     }
                 }
 
-                // Handle OneToMany relationships
+                // OneToMany
                 if ($oneToManyAttrs = $prop->getAttributes(OneToMany::class)) {
                     /** @var OneToMany $attr */
                     $attr = $oneToManyAttrs[0]->newInstance();
                     $this->loadOneToManyWithGuard($entity, $prop, $attr, $loadedEntities);
                 }
 
-                // Handle ManyToMany relationships
+                // ManyToMany
                 if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
                     /** @var ManyToMany $attr */
                     $attr = $manyToManyAttrs[0]->newInstance();
                     $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedEntities);
                 }
             } catch (\Exception $e) {
-                // Log error but don't fail the entire load
                 error_log("Failed to load relation {$prop->getName()}: " . $e->getMessage());
                 $prop->setAccessible(true);
-                // Set empty value for failed relations
                 if ($oneToManyAttrs || $manyToManyAttrs) {
                     $prop->setValue($entity, []);
                 } else {
@@ -1261,13 +1249,8 @@ abstract class EntityRepository
 
     private function loadOneToOneInverse(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
-        error_log("loadOneToOneInverse for " . get_class($entity) . "::" . $prop->getName());
-        error_log(print_r($entity, true));
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity));
-            return;
-        }
+        if ($currEntityDepth > $this->context->maxDepth) return;
 
         $ownId = $this->getEntityId($entity);
         if (!$ownId) {
@@ -1292,13 +1275,8 @@ abstract class EntityRepository
         /** @var OneToOne|ManyToOne $otherMeta */
         $otherMeta = $otherAttrs[0]->newInstance();
         $fkColumn = $this->getRelationColumnName($otherMeta->inversedBy); // your helper for FK name
-        error_log("table => " . $targetTable);
-        error_log("where => " . $fkColumn);
         $fkValue = $entity->$fkColumn;
-        error_log("equal " . $fkValue);
-        error_log("fetch => " . $targetClass);
         if ($this->context->hasInstance($targetClass, $fkValue)) {
-            error_log("find cached instance");
             $prop->setAccessible(true);
             $prop->setValue($entity, $this->context->getInstance($targetClass, $fkValue));
             return;
@@ -1309,7 +1287,6 @@ abstract class EntityRepository
             ->from($targetTable, 't')
             ->where("t.id", '=', $fkValue)
             ->fetch($targetClass);
-        // error_log(print_r($row, true));
         if ($row) {
             $prop->setAccessible(true);
             $prop->setValue($entity, $row);
@@ -1329,15 +1306,9 @@ abstract class EntityRepository
      */
     private function loadManyToOneWithGuard(object $entity, ReflectionProperty $prop, ManyToOne $attr, array &$loadedEntities): void
     {
-        error_log("=== loadManyToOneWithGuard for " . get_class($entity) . "->" . $prop->getName());
-
         $currEntityDepth = $this->context->getDepth($entity);
-        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
 
-        if ($currEntityDepth >= $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity) . ", skipping relation load");
-            return;
-        }
+        if ($currEntityDepth >= $this->context->maxDepth) return;
 
         $prop->setAccessible(true);
         $fkColumn = $this->getRelationColumnName($prop->getName());
@@ -1350,12 +1321,12 @@ abstract class EntityRepository
 
         // fetch FK value
         $qb = clone $this->qb;
-        $row = $qb->select([$fkColumn])
+        $row = $qb->select()
             ->from($this->table)
-            ->where('id', '=', $entityId)
+            ->where('id', '=', $entity->$fkColumn)
             ->fetch();
 
-        $fkValue = $row ? ($row->$fkColumn ?? null) : null;
+        $fkValue = $row ? ($row->$fkColumn ?? $row->id ?? null) : null;
         if ($fkValue === null) {
             $prop->setValue($entity, null);
             return;
@@ -1383,29 +1354,13 @@ abstract class EntityRepository
 
         if ($relatedEntity) {
             $relatedEntityDepth = $this->context->getDepth($relatedEntity);
-            error_log(print_r($relatedEntity, true));
             $newDepth = $relatedEntityDepth + 1;
-            error_log("Setting related entity depth to {$newDepth}");
-
             $this->context->registerInstance($attr->targetEntity, $fkValue, $relatedEntity);
             $this->context->setDepth($relatedEntity, $newDepth);
-            error_log("✅ Assigning related entity " . get_class($relatedEntity) . " to " . get_class($entity) . "->" . $prop->getName());
             $prop->setValue($entity, $relatedEntity);
-
-            $currentVal = $prop->getValue($entity);
-            error_log("After assignment, property holds: " . print_r($currentVal, true));
-
-            if ($newDepth < $this->context->maxDepth) {
-                error_log("Recursively loading relations for " . get_class($relatedEntity));
-                $this->loadRelationsWithGuard($relatedEntity, $loadedEntities);
-            } else {
-                error_log("Not loading relations for " . get_class($relatedEntity) . " because it would exceed max depth");
-            }
         } else {
             $prop->setValue($entity, null);
         }
-
-        error_log("=== loadManyToOneWithGuard END for property: " . $prop->getName() . " ===");
     }
 
     /**
@@ -1413,13 +1368,8 @@ abstract class EntityRepository
      */
     private function loadOneToOneWithGuard(object $entity, ReflectionProperty $prop, OneToOne $attr, array &$loadedEntities): void
     {
-        error_log("loadOneToOneWithGuard");
-
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity));
-            return;
-        }
+        if ($currEntityDepth > $this->context->maxDepth) return;
 
         // Same as ManyToOne for owning side
         $this->loadManyToOneWithGuard($entity, $prop, new ManyToOne(
@@ -1432,15 +1382,14 @@ abstract class EntityRepository
     /**
      * Load OneToMany with guard
      */
-    private function loadOneToManyWithGuard(object $entity, ReflectionProperty $prop, OneToMany $attr, array &$loadedEntities): void
-    {
-        error_log("loadOneToManyWithGuard");
-
-        $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth >= $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity));
-            return;
-        }
+    private function loadOneToManyWithGuard(
+        object $entity,
+        ReflectionProperty $prop,
+        OneToMany $attr,
+        array &$loadedEntities
+    ): void {
+        $currEntityDepth = $this->context->getDepth($entity) ?? 0;
+        if ($currEntityDepth >= $this->context->maxDepth) return;
 
         $prop->setAccessible(true);
         $entityId = $this->getEntityId($entity);
@@ -1449,22 +1398,46 @@ abstract class EntityRepository
             return;
         }
 
-        $targetTable = $this->tableOf($attr->targetEntity);
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
 
-        // Determine FK on the TARGET table using mappedBy
         if (!$attr->mappedBy) {
             $prop->setValue($entity, []);
             return;
         }
+
+        // FK lives on the TARGET table
         $fkColumn = $this->getRelationColumnName($attr->mappedBy, $targetTable);
 
         $qb = clone $this->qb;
-        $related = $qb->select()
+        $rows = $qb->select()
             ->from($targetTable)
             ->where($fkColumn, '=', $entityId)
-            ->fetchAll($attr->targetEntity);
+            ->fetchAll($targetClass);
 
-        $prop->setValue($entity, $related);
+        $newDepth = $currEntityDepth + 1;
+        $dedup = [];
+
+        foreach ($rows as $row) {
+            $rowId = $this->getEntityId($row);
+            if (!$rowId) continue;
+
+            $key = $targetClass . ':' . $rowId;
+
+            if ($this->context->hasInstance($targetClass, $rowId)) {
+                $instance = $this->context->getInstance($targetClass, $rowId);
+                $dedup[] = $instance;
+                $loadedEntities[$key] = $instance;
+            } else {
+                $this->context->registerInstance($targetClass, $rowId, $row);
+                $this->context->setDepth($row, $newDepth);
+                $dedup[] = $row;
+                $loadedEntities[$key] = $row;
+                $this->loadRelationsWithGuard($row, $loadedEntities);
+            }
+        }
+
+        $prop->setValue($entity, $dedup);
     }
 
     /**
@@ -1476,60 +1449,56 @@ abstract class EntityRepository
         ManyToMany         $attr,
         array              &$loadedEntities,
     ): void {
-        error_log("");
-        error_log("=== loadManyToManyWithGuard START for entity: " . get_class($entity) . " property: " . $prop->getName() . " ===");
-
-        $currEntityDepth = $this->context->getDepth($entity);
-        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
-        if ($currEntityDepth >= $this->context->maxDepth) {
-            error_log("Max depth reached, skipping ManyToMany load for " . get_class($entity));
-            return;
-        }
+        $currEntityDepth = $this->context->getDepth($entity) ?? 0;
+        if ($currEntityDepth >= $this->context->maxDepth) return;
 
         $prop->setAccessible(true);
 
         $ownId = $this->getEntityId($entity);
-        error_log("Entity ID: " . ($ownId ?: "null"));
         if (!$ownId) {
-            error_log("Entity ID is null, setting empty array on property " . $prop->getName());
             $prop->setValue($entity, []);
             return;
         }
 
         try {
             [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName(), $entity);
-            error_log("Join table meta resolved: joinTable=$jt, ownCol=$ownCol, invCol=$invCol");
         } catch (\Exception $e) {
-            error_log("Failed to resolve join table meta for property " . $prop->getName() . ": " . $e->getMessage());
             $prop->setValue($entity, []);
             return;
         }
 
         $targetClass = $attr->targetEntity;
         $targetTable = $this->tableOf($targetClass);
-        error_log("Target entity: $targetClass, target table: $targetTable");
 
         $qb = clone $this->qb;
-        error_log("Executing ManyToMany query: SELECT t.* FROM $targetTable t "
-            . "JOIN $jt j ON j.$invCol = t.id WHERE j.$ownCol = $ownId");
-
         $rows = $qb->select(['t.*'])
             ->from($targetTable, 't')
             ->join($jt, 'j', "j.$invCol", '=', 't.id')
             ->where("j.$ownCol", '=', $ownId)
             ->fetchAll($targetClass);
 
-        if (!$rows) {
-            error_log("No related rows found for $targetClass (property: " . $prop->getName() . ")");
-        } else {
-            error_log("Found " . count($rows) . " related $targetClass entities");
+        $newDepth = $currEntityDepth + 1;
+        $dedup = [];
+
+        foreach ($rows as $row) {
+            $rowId = $this->getEntityId($row);
+            if (!$rowId) continue;
+
+            $key = $targetClass . ':' . $rowId;
+
+            if ($this->context->hasInstance($targetClass, $rowId)) {
+                $instance = $this->context->getInstance($targetClass, $rowId);
+                $dedup[] = $instance;
+                $loadedEntities[$key] = $instance;
+            } else {
+                $this->context->registerInstance($targetClass, $rowId, $row);
+                $this->context->setDepth($row, $newDepth);
+                $dedup[] = $row;
+                $loadedEntities[$key] = $row;
+            }
         }
 
-        // Don't recursively load relations for ManyToMany to prevent circular references
-        $prop->setValue($entity, $rows);
-
-        error_log("=== loadManyToManyWithGuard END for property: " . $prop->getName() . " ===");
-        error_log("");
+        $prop->setValue($entity, $dedup);
     }
 
     /**
@@ -1537,57 +1506,38 @@ abstract class EntityRepository
      */
     private function loadManyToOne(object $entity, ReflectionProperty $prop, ManyToOne $attr): void
     {
-        error_log("");
-        error_log("=== loadManyToOne START for entity: " . get_class($entity) . " property: " . $prop->getName() . " ===");
-
         $currEntityDepth = $this->context->getDepth($entity);
-        error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
 
-        if ($currEntityDepth >= $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity) . ", skipping relation load");
-            return;
-        }
+        if ($currEntityDepth >= $this->context->maxDepth) return;
 
         $prop->setAccessible(true);
 
         // Determine FK column
         $fkColumn = $this->getRelationColumnName($prop->getName());
-        error_log("FK column resolved: $fkColumn");
-        error_log(print_r($entity, true));
 
         // Get this entity's ID
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
-            error_log("Entity ID is null, setting property to null and returning.");
             $prop->setValue($entity, null);
             return;
         }
-        error_log("Entity ID: $entityId");
 
         // Fetch the FK value from the current table
         $qb = clone $this->qb;
         $targetTable = $this->tableOf(get_class($entity));
-        error_log("Querying table $targetTable");
-        error_log("with FkCol $fkColumn");
-        error_log("where id = $entityId for FK...");
         $row = $qb->select([$fkColumn])
             ->from($targetTable)
             ->where('id', '=', $entityId)
             ->fetch();
-        error_log(print_r($row, true));
 
         $fkValue = $row ? ($row->$fkColumn ?? null) : null;
-        error_log("fk value => " . $fkValue);
 
         if ($fkValue === null) {
-            error_log("FK value is null, setting property to null.");
             $prop->setValue($entity, null);
             return;
         }
-        error_log("FK value found: $fkValue");
 
         // Check if the target entity is already loaded in the context
-        error_log("checking {$attr->targetEntity} with fk $fkValue");
         if ($this->context->hasInstance($attr->targetEntity, $fkValue)) {
             $instance = $this->context->getInstance($attr->targetEntity, $fkValue);
             $prop->setValue($entity, $instance);
@@ -1595,11 +1545,9 @@ abstract class EntityRepository
             // Fix: Don't increment instance depth, set it relative to current entity
             $newDepth = $currEntityDepth + 1;
             $existingDepth = $this->context->getDepth($instance);
-            error_log("Reusing cached entity: current depth {$existingDepth}, new depth would be {$newDepth}");
 
             // Only update depth if the new path is shallower
             if ($newDepth < $existingDepth) {
-                error_log("Updating cached entity depth to {$newDepth} (was {$existingDepth})");
                 $this->context->setDepth($instance, $newDepth);
             }
             return;
@@ -1607,7 +1555,6 @@ abstract class EntityRepository
 
         // Fetch the related entity from its table
         $targetTable = $this->tableOf($attr->targetEntity);
-        error_log("Fetching related entity from table: $targetTable");
         $qb2 = clone $this->qb;
         $relatedEntity = $qb2->select()
             ->from($targetTable)
@@ -1615,30 +1562,19 @@ abstract class EntityRepository
             ->fetch($attr->targetEntity);
 
         if ($relatedEntity) {
-            error_log("Related entity fetched successfully: " . get_class($relatedEntity));
-
             // Register this entity in the context with proper depth
             $newDepth = $currEntityDepth + 1;
             $this->context->registerInstance($attr->targetEntity, $fkValue, $relatedEntity);
             $this->context->setDepth($relatedEntity, $newDepth);
-            error_log("Registered entity {$attr->targetEntity}:{$fkValue} with depth {$newDepth}");
 
             // Recursively load relations for this entity if we're not at max depth
             if ($newDepth < $this->context->maxDepth) {
-                error_log("Recursively loading relations for " . get_class($relatedEntity));
                 $this->loadRelations($relatedEntity);
-            } else {
-                error_log("Not loading relations for " . get_class($relatedEntity) . " because it would exceed max depth");
             }
-        } else {
-            error_log("Related entity not found, setting property to null.");
         }
 
         // Set the property value
         $prop->setValue($entity, $relatedEntity ?: null);
-
-        error_log("=== loadManyToOne END for property: " . $prop->getName() . " ===");
-        error_log("");
     }
 
     /**
@@ -1646,13 +1582,9 @@ abstract class EntityRepository
      */
     private function loadOneToOne(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
-        error_log("loadOneToOne");
-
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) {
-            error_log("Max depth reached for " . get_class($entity));
-            return;
-        }
+        if ($currEntityDepth > $this->context->maxDepth) return;
+
         // Same as ManyToOne for owning side
         $this->loadManyToOne($entity, $prop, new ManyToOne(
             targetEntity: $attr->targetEntity,
@@ -1666,13 +1598,9 @@ abstract class EntityRepository
      */
     private function loadOneToMany(object $entity, ReflectionProperty $prop, OneToMany $attr): void
     {
-        error_log("loadOneToMany for " . get_class($entity) . "->" . $prop->getName());
-
         $currEntityDepth = $this->context->getDepth($entity);
-        error_log("OneToMany: parent entity depth: {$currEntityDepth}");
 
         if ($currEntityDepth >= $this->context->maxDepth) {
-            error_log("Max depth reached in loadOneToMany for " . get_class($entity));
             $prop->setAccessible(true);
             $prop->setValue($entity, []);
             return;
@@ -1692,7 +1620,6 @@ abstract class EntityRepository
             return;
         }
         $fkColumn = $this->getRelationColumnName($attr->mappedBy, $targetTable);
-        error_log("Looking for related {$attr->targetEntity} with {$fkColumn}={$entityId}");
 
         $qb = clone $this->qb;
         $related = $qb->select()
@@ -1700,7 +1627,6 @@ abstract class EntityRepository
             ->where($fkColumn, '=', $entityId)
             ->fetchAll($attr->targetEntity);
 
-        error_log("Found " . count($related) . " related entities");
         $prop->setValue($entity, $related);
 
         // Set proper depth for related entities and load their relations
@@ -1708,19 +1634,14 @@ abstract class EntityRepository
         if ($newDepth < $this->context->maxDepth) {
             foreach ($related as $rel) {
                 $relId = $this->getEntityId($rel);
-                error_log("Registering related " . get_class($rel) . ":{$relId} with depth {$newDepth}");
                 $this->context->registerInstance($attr->targetEntity, $relId, $rel);
                 $this->context->setDepth($rel, $newDepth);
 
                 // Only load deeper relations if we're not at max depth
                 if ($newDepth < $this->context->maxDepth) {
                     $this->loadRelations($rel);
-                } else {
-                    error_log("Max depth reached, not loading relations for " . get_class($rel));
                 }
             }
-        } else {
-            error_log("Not loading relations for " . count($related) . " entities of type " . $attr->targetEntity . " - would exceed max depth");
         }
     }
 
