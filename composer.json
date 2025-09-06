@@ -6,12 +6,12 @@
   "require": {
     "php": "^8.4",
     "monkeyscloud/monkeyslegion-database": "^1.0",
+    "monkeyscloud/monkeyslegion-entity": "^1.0",
     "ext-pdo": "*"
   },
   "autoload": {
     "psr-4": {
-      "MonkeysLegion\\Query\\": "src/Query/",
-      "MonkeysLegion\\Repository\\": "src/Repository/"
+      "MonkeysLegion\\": "src/"
     }
   },
   "extra": {

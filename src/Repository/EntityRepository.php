@@ -1006,7 +1006,7 @@ abstract class EntityRepository
     public function attachRelation(object $entity, string $relationProp, int|string $value): int
     {
         // [0] = joinTable, [1] = ownCol, [2] = invCol
-        [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
+        [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp, $entity);
 
         // retrieve the ID of this entity
         $ref = new ReflectionProperty($entity::class, 'id');
@@ -1034,7 +1034,7 @@ abstract class EntityRepository
      */
     public function detachRelation(object $entity, string $relationProp, int|string $value): int
     {
-        [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp);
+        [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp, $entity);
 
         $ref = new ReflectionProperty($entity::class, 'id');
         $ref->setAccessible(true);
@@ -1054,12 +1054,13 @@ abstract class EntityRepository
      * @return array{0:string,1:string,2:string}  [ join_table, join_column, inverse_column ]
      * @throws \ReflectionException
      */
-    private function getJoinTableMeta(string $relationProp): array
+    private function getJoinTableMeta(string $relationProp, ?object $entity = null): array
     {
-        $ownClass = new ReflectionClass($this->entityClass);
+        $className = $entity ? get_class($entity) : $this->entityClass;
+        $ownClass = new ReflectionClass($className);
 
         if (! $ownClass->hasProperty($relationProp)) {
-            throw new InvalidArgumentException("Property {$relationProp} not found on {$this->entityClass}");
+            throw new InvalidArgumentException("Property {$relationProp} not found on {$className}");
         }
 
         $prop  = $ownClass->getProperty($relationProp);
@@ -1163,10 +1164,15 @@ abstract class EntityRepository
 
             // Handle OneToOne relationships (owning side)
             if ($oneToOneAttrs = $prop->getAttributes(OneToOne::class)) {
-                /** @var OneToOne $attr */
+                error_log("Found OneToOne on " . $prop->getName());
                 $attr = $oneToOneAttrs[0]->newInstance();
-                if (!$attr->mappedBy) { // Only load if we're the owning side
+
+                if (!$attr->mappedBy) {
+                    // Owning side → use FK
                     $this->loadOneToOne($entity, $prop, $attr);
+                } else {
+                    // Inverse side → need a different loader
+                    $this->loadOneToOneInverse($entity, $prop, $attr);
                 }
             }
 
@@ -1201,7 +1207,7 @@ abstract class EntityRepository
         error_log("loadRelationsWithGuard");
 
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) {
+        if ($currEntityDepth >= $this->context->maxDepth) {
             error_log("Max depth reached for " . get_class($entity));
             return;
         }
@@ -1253,14 +1259,78 @@ abstract class EntityRepository
         }
     }
 
+    private function loadOneToOneInverse(object $entity, ReflectionProperty $prop, OneToOne $attr): void
+    {
+        error_log("loadOneToOneInverse for " . get_class($entity) . "::" . $prop->getName());
+        error_log(print_r($entity, true));
+        $currEntityDepth = $this->context->getDepth($entity);
+        if ($currEntityDepth > $this->context->maxDepth) {
+            error_log("Max depth reached for " . get_class($entity));
+            return;
+        }
+
+        $ownId = $this->getEntityId($entity);
+        if (!$ownId) {
+            $prop->setValue($entity, null);
+            return;
+        }
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
+
+        // mappedBy tells us which property on target points back here
+        $mappedBy = $attr->mappedBy;
+
+        $otherRef = new ReflectionProperty($targetClass, $mappedBy);
+
+        $otherAttrs = $otherRef->getAttributes(OneToOne::class)
+            ?: $otherRef->getAttributes(ManyToOne::class);
+
+        if (!$otherAttrs) {
+            throw new \RuntimeException("Invalid mapping: {$targetClass}::{$mappedBy} has no OneToOne/ManyToOne");
+        }
+
+        /** @var OneToOne|ManyToOne $otherMeta */
+        $otherMeta = $otherAttrs[0]->newInstance();
+        $fkColumn = $this->getRelationColumnName($otherMeta->inversedBy); // your helper for FK name
+        error_log("table => " . $targetTable);
+        error_log("where => " . $fkColumn);
+        $fkValue = $entity->$fkColumn;
+        error_log("equal " . $fkValue);
+        error_log("fetch => " . $targetClass);
+        if ($this->context->hasInstance($targetClass, $fkValue)) {
+            error_log("find cached instance");
+            $prop->setAccessible(true);
+            $prop->setValue($entity, $this->context->getInstance($targetClass, $fkValue));
+            return;
+        }
+
+        $qb = clone $this->qb;
+        $row = $qb->select(['t.*'])
+            ->from($targetTable, 't')
+            ->where("t.id", '=', $fkValue)
+            ->fetch($targetClass);
+        // error_log(print_r($row, true));
+        if ($row) {
+            $prop->setAccessible(true);
+            $prop->setValue($entity, $row);
+
+            // Set the inverse side
+            $inverseProp = $attr->mappedBy ?: $otherMeta->inversedBy;
+            if ($inverseProp && property_exists($row, $inverseProp)) {
+                $row->$inverseProp = $entity;
+            }
+
+            $this->context->registerInstance($targetClass, $fkValue, $row);
+        }
+    }
+
     /**
      * Load ManyToOne with guard
      */
     private function loadManyToOneWithGuard(object $entity, ReflectionProperty $prop, ManyToOne $attr, array &$loadedEntities): void
     {
-        error_log("loadManyToOneWithGuard for " . get_class($entity) . "->" . $prop->getName());
+        error_log("=== loadManyToOneWithGuard for " . get_class($entity) . "->" . $prop->getName());
 
-        // Get current entity depth
         $currEntityDepth = $this->context->getDepth($entity);
         error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
 
@@ -1270,18 +1340,15 @@ abstract class EntityRepository
         }
 
         $prop->setAccessible(true);
-
-        // FK column lives on THIS table
         $fkColumn = $this->getRelationColumnName($prop->getName());
-
-        // Get this entity's id
         $entityId = $this->getEntityId($entity);
+
         if (!$entityId) {
             $prop->setValue($entity, null);
             return;
         }
 
-        // Fetch FK value
+        // fetch FK value
         $qb = clone $this->qb;
         $row = $qb->select([$fkColumn])
             ->from($this->table)
@@ -1301,14 +1368,12 @@ abstract class EntityRepository
             return;
         }
 
-        // Avoid circular re-load
         $relatedKey = $attr->targetEntity . ':' . $fkValue;
         if (isset($loadedEntities[$relatedKey])) {
-            $prop->setValue($entity, null);
+            $prop->setValue($entity, $loadedEntities[$relatedKey]);
             return;
         }
 
-        // Load related entity by its table/id
         $targetTable = $this->tableOf($attr->targetEntity);
         $qb2 = clone $this->qb;
         $relatedEntity = $qb2->select()
@@ -1316,24 +1381,31 @@ abstract class EntityRepository
             ->where('id', '=', $fkValue)
             ->fetch($attr->targetEntity);
 
-        // When loading a related entity, set its depth properly based on parent
         if ($relatedEntity) {
-            error_log("Setting related entity depth to parent+1: " . ($currEntityDepth + 1));
-            $this->context->registerInstance($attr->targetEntity, $fkValue, $relatedEntity);
-            $this->context->setDepth($relatedEntity, $currEntityDepth + 1);
+            $relatedEntityDepth = $this->context->getDepth($relatedEntity);
+            error_log(print_r($relatedEntity, true));
+            $newDepth = $relatedEntityDepth + 1;
+            error_log("Setting related entity depth to {$newDepth}");
 
-            // Only load relations of related entity if we're not at max depth
-            if (($currEntityDepth + 1) < $this->context->maxDepth) {
-                $newLoadedEntities = $loadedEntities;
-                $newLoadedEntities[$attr->targetEntity . ':' . $fkValue] = $relatedEntity;
-                $this->loadRelationsWithGuard($relatedEntity, $newLoadedEntities);
+            $this->context->registerInstance($attr->targetEntity, $fkValue, $relatedEntity);
+            $this->context->setDepth($relatedEntity, $newDepth);
+            error_log("✅ Assigning related entity " . get_class($relatedEntity) . " to " . get_class($entity) . "->" . $prop->getName());
+            $prop->setValue($entity, $relatedEntity);
+
+            $currentVal = $prop->getValue($entity);
+            error_log("After assignment, property holds: " . print_r($currentVal, true));
+
+            if ($newDepth < $this->context->maxDepth) {
+                error_log("Recursively loading relations for " . get_class($relatedEntity));
+                $this->loadRelationsWithGuard($relatedEntity, $loadedEntities);
             } else {
                 error_log("Not loading relations for " . get_class($relatedEntity) . " because it would exceed max depth");
             }
+        } else {
+            $prop->setValue($entity, null);
         }
 
-        // Set the property value
-        $prop->setValue($entity, $relatedEntity ?: null);
+        error_log("=== loadManyToOneWithGuard END for property: " . $prop->getName() . " ===");
     }
 
     /**
@@ -1365,7 +1437,7 @@ abstract class EntityRepository
         error_log("loadOneToManyWithGuard");
 
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) {
+        if ($currEntityDepth >= $this->context->maxDepth) {
             error_log("Max depth reached for " . get_class($entity));
             return;
         }
@@ -1409,7 +1481,7 @@ abstract class EntityRepository
 
         $currEntityDepth = $this->context->getDepth($entity);
         error_log("Current entity depth: {$currEntityDepth}, max depth: {$this->context->maxDepth}");
-        if ($currEntityDepth > $this->context->maxDepth) {
+        if ($currEntityDepth >= $this->context->maxDepth) {
             error_log("Max depth reached, skipping ManyToMany load for " . get_class($entity));
             return;
         }
@@ -1425,7 +1497,7 @@ abstract class EntityRepository
         }
 
         try {
-            [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
+            [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName(), $entity);
             error_log("Join table meta resolved: joinTable=$jt, ownCol=$ownCol, invCol=$invCol");
         } catch (\Exception $e) {
             error_log("Failed to resolve join table meta for property " . $prop->getName() . ": " . $e->getMessage());
@@ -1574,7 +1646,7 @@ abstract class EntityRepository
      */
     private function loadOneToOne(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
-        error_log("loadOneToOneWithGuard");
+        error_log("loadOneToOne");
 
         $currEntityDepth = $this->context->getDepth($entity);
         if ($currEntityDepth > $this->context->maxDepth) {

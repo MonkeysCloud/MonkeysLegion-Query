@@ -16,9 +16,6 @@ final class HydrationContext
      */
     public array $instances = [];
 
-    /** @var array<string, array<int, array>> */
-    public array $rows = [];
-
     /**
      * Track recursion depth for each path
      * @var array<string, int>
@@ -116,23 +113,5 @@ final class HydrationContext
     public function getDepth(object $entity): int
     {
         return $this->meta[$entity]['depth'] ?? 0;
-    }
-
-    public function registerRow(string $class, int $id, array $row): void
-    {
-        if (!isset($this->rows[$class])) {
-            $this->rows[$class] = [];
-        }
-        $this->rows[$class][$id] = $row;
-    }
-
-    public function getRow(string $class, int $id): ?array
-    {
-        return $this->rows[$class][$id] ?? null;
-    }
-
-    public function hasRow(string $class, int $id): bool
-    {
-        return isset($this->rows[$class][$id]);
     }
 }
