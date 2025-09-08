@@ -10,10 +10,7 @@ namespace MonkeysLegion\Repository;
  */
 final class HydrationContext
 {
-    /**
-     * Map of loaded entity instances by class and ID
-     * @var array<string, array<int, object>>
-     */
+    /** @var array<string, array<int|string, object>> */
     public array $instances = [];
 
     /**
@@ -27,6 +24,7 @@ final class HydrationContext
      */
     public int $maxDepth;
 
+    /** @var \SplObjectStorage<object, array{depth:int}> */
     private \SplObjectStorage $meta;
 
     /**
@@ -41,7 +39,7 @@ final class HydrationContext
     /**
      * Generate a key for an entity class+id pair
      */
-    public function key(string $class, int $id): string
+    public function key(string $class, int|string $id): string
     {
         return $class . ':' . $id;
     }
@@ -49,7 +47,7 @@ final class HydrationContext
     /**
      * Register an entity instance in the context
      */
-    public function registerInstance(string $class, int $id, object $instance): void
+    public function registerInstance(string $class, string|int $id, object $instance): void
     {
         if (!isset($this->instances[$class])) {
             $this->instances[$class] = [];
@@ -61,7 +59,7 @@ final class HydrationContext
     /**
      * Get a registered entity instance if it exists
      */
-    public function getInstance(string $class, int $id): ?object
+    public function getInstance(string $class, string|int $id): ?object
     {
         return $this->instances[$class][$id] ?? null;
     }
@@ -69,7 +67,7 @@ final class HydrationContext
     /**
      * Check if an entity has been registered
      */
-    public function hasInstance(string $class, int $id): bool
+    public function hasInstance(string $class, string|int $id): bool
     {
         return isset($this->instances[$class][$id]);
     }
