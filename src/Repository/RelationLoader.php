@@ -112,10 +112,8 @@ class RelationLoader extends EntityHelper
         $ref = new ReflectionClass($entity);
 
         foreach ($ref->getProperties() as $prop) {
+            $isCollectionRelation = false;
             try {
-                $oneToManyAttrs = null;
-                $manyToManyAttrs = null;
-
                 // ManyToOne
                 if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
                     /** @var ManyToOne $attr */
@@ -136,6 +134,7 @@ class RelationLoader extends EntityHelper
 
                 // OneToMany
                 if ($oneToManyAttrs = $prop->getAttributes(OneToMany::class)) {
+                    $isCollectionRelation = true;
                     /** @var OneToMany $attr */
                     $attr = $oneToManyAttrs[0]->newInstance();
                     $this->loadOneToManyWithGuard($entity, $prop, $attr, $loadedEntities);
@@ -143,6 +142,7 @@ class RelationLoader extends EntityHelper
 
                 // ManyToMany
                 if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
+                    $isCollectionRelation = true;
                     /** @var ManyToMany $attr */
                     $attr = $manyToManyAttrs[0]->newInstance();
                     $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedEntities);
@@ -150,11 +150,7 @@ class RelationLoader extends EntityHelper
             } catch (\Exception $e) {
                 error_log("Failed to load relation {$prop->getName()}: " . $e->getMessage());
                 $prop->setAccessible(true);
-                if ($oneToManyAttrs || $manyToManyAttrs) {
-                    $prop->setValue($entity, []);
-                } else {
-                    $prop->setValue($entity, null);
-                }
+                $prop->setValue($entity, $isCollectionRelation ? [] : null);
             }
         }
     }
@@ -162,7 +158,7 @@ class RelationLoader extends EntityHelper
     protected function loadOneToOneInverse(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) return;
+        if ($currEntityDepth >= $this->context->maxDepth) return;
 
         $ownId = $this->getEntityId($entity);
         if (!$ownId) {
@@ -316,7 +312,7 @@ class RelationLoader extends EntityHelper
     protected function loadOneToOneWithGuard(object $entity, ReflectionProperty $prop, OneToOne $attr, array &$loadedEntities): void
     {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) return;
+        if ($currEntityDepth >= $this->context->maxDepth) return;
 
         // Same as ManyToOne for owning side
         $this->loadManyToOneWithGuard($entity, $prop, new ManyToOne(
@@ -404,7 +400,7 @@ class RelationLoader extends EntityHelper
         object             $entity,
         ReflectionProperty $prop,
         ManyToMany         $attr,
-        array              &$loadedEntities,
+        array              &$loadedEntities
     ): void {
         $currEntityDepth = $this->context->getDepth($entity);
         if ($currEntityDepth >= $this->context->maxDepth) return;
@@ -551,7 +547,7 @@ class RelationLoader extends EntityHelper
     protected function loadOneToOne(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth > $this->context->maxDepth) return;
+        if ($currEntityDepth >= $this->context->maxDepth) return;
 
         // Same as ManyToOne for owning side
         $this->loadManyToOne($entity, $prop, new ManyToOne(

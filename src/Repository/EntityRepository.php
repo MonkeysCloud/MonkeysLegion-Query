@@ -508,9 +508,6 @@ abstract class EntityRepository extends RelationLoader
             try {
                 $v = (clone $this->qb);
                 $firstKey = array_key_first($keyMap);
-                if ($firstKey === null) {
-                    throw new \RuntimeException('Natural key map is empty, cannot build where clause.');
-                }
                 $verify = $v->select(['id'])
                     ->from($this->table)
                     ->where((string)$firstKey, '=', reset($keyMap));
