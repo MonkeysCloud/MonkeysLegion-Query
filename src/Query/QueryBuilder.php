@@ -1344,4 +1344,49 @@ final class QueryBuilder
     {
         return $this->conn;
     }
+
+    /**
+     * Groups WHERE conditions with AND (explicit AND group).
+     */
+    public function andWhereGroup(callable $callback): self
+    {
+        $subBuilder = new self($this->conn);
+        $callback($subBuilder);
+
+        if (!empty($subBuilder->parts['where'])) {
+            $clauses = [];
+            foreach ($subBuilder->parts['where'] as $i => $w) {
+                $prefix = $i && $w['type'] ? ' ' . $w['type'] . ' ' : '';
+                $clauses[] = $prefix . $w['expr'];
+            }
+
+            // Always AND the group, even if it's the first condition — matches method name semantics
+            $this->parts['where'][] = [
+                'type' => 'AND',
+                'expr' => '(' . implode('', $clauses) . ')',
+            ];
+
+            // Merge params from subBuilder with collision-safe renaming
+            foreach ($subBuilder->params as $key => $value) {
+                if (isset($this->params[$key])) {
+                    $newKey = $key . '_g' . $this->counter++;
+                    // Update the just-added expr to use the new param key
+                    $lastIdx = count($this->parts['where']) - 1;
+                    $this->parts['where'][$lastIdx]['expr'] =
+                        str_replace($key, $newKey, $this->parts['where'][$lastIdx]['expr']);
+                    $this->params[$newKey] = $value;
+                } else {
+                    $this->params[$key] = $value;
+                }
+            }
+
+            // Keep counter monotonic
+            if ($subBuilder->counter > $this->counter) {
+                $this->counter = $subBuilder->counter;
+            }
+        }
+
+        return $this;
+    }
+
 }
