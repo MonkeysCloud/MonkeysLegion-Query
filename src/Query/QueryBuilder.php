@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace MonkeysLegion\Query;
 
+use MonkeysLegion\Database\Contracts\ConnectionInterface;
 use MonkeysLegion\Database\MySQL\Connection;
 use MonkeysLegion\Entity\Hydrator;
 use PDO;
@@ -43,9 +44,9 @@ final class QueryBuilder
     /**
      * Constructor.
      *
-     * @param Connection $conn Database connection instance.
+     * @param ConnectionInterface $conn Database connection instance.
      */
-    public function __construct(private Connection $conn) {}
+    public function __construct(private ConnectionInterface $conn) {}
 
     /**
      * Sets the SELECT columns.
