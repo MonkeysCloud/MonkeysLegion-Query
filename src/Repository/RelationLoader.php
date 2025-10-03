@@ -14,6 +14,18 @@ use ReflectionProperty;
 class RelationLoader extends EntityHelper
 {
     /**
+     * Check if an entity can have deeper relations loaded
+     * 
+     * @param object $entity
+     * @return bool
+     */
+    private function canGoDeeper(object $entity): bool
+    {
+        $canGo = $this->context->getDepth($entity) < $this->context->maxDepth;
+        return $canGo;
+    }
+
+    /**
      * Load all relationships for an entity.
      *
      * @param object $entity The entity to load relationships for
@@ -22,6 +34,10 @@ class RelationLoader extends EntityHelper
      */
     protected function loadRelations(object $entity, array $loadedClasses = []): void
     {
+        if (!$this->canGoDeeper($entity)) {
+            return;
+        }
+
         $entityClass = get_class($entity);
         $this->tables[$this->tableOf($entityClass)] = $entityClass;
 
@@ -35,12 +51,6 @@ class RelationLoader extends EntityHelper
         if (!$this->context->hasInstance($entityClass, $entityId)) {
             $this->context->registerInstance($entityClass, $entityId, $entity);
             $this->context->setDepth($entity, 0);
-        }
-
-        $currEntityDepth = $this->context->getDepth($entity);
-
-        if ($currEntityDepth >= $this->context->maxDepth) {
-            return;
         }
 
         $ref = new ReflectionClass($entity);
@@ -86,9 +96,8 @@ class RelationLoader extends EntityHelper
      * Load relations with guard against circular references
      *
      * @param object $entity
-     * @param array<string, mixed> $loadedEntities Already loaded entities in this query
      */
-    protected function loadRelationsWithGuard(object $entity, array &$loadedEntities = []): void
+    protected function loadRelationsWithGuard(object $entity): void
     {
         $entityClass = get_class($entity);
         $entityId = $this->getEntityId($entity);
@@ -103,9 +112,8 @@ class RelationLoader extends EntityHelper
             $this->context->setDepth($entity, 0);
         }
 
-        $currEntityDepth = $this->context->getDepth($entity);
-
-        if ($currEntityDepth >= $this->context->maxDepth) {
+        // Early return if we've reached max depth
+        if (!$this->canGoDeeper($entity)) {
             return;
         }
 
@@ -118,7 +126,7 @@ class RelationLoader extends EntityHelper
                 if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
                     /** @var ManyToOne $attr */
                     $attr = $manyToOneAttrs[0]->newInstance();
-                    $this->loadManyToOneWithGuard($entity, $prop, $attr, $loadedEntities);
+                    $this->loadManyToOneWithGuard($entity, $prop, $attr);
                 }
 
                 // OneToOne owning side
@@ -126,7 +134,7 @@ class RelationLoader extends EntityHelper
                     /** @var OneToOne $attr */
                     $attr = $oneToOneAttrs[0]->newInstance();
                     if (!$attr->mappedBy) {
-                        $this->loadOneToOneWithGuard($entity, $prop, $attr, $loadedEntities);
+                        $this->loadOneToOneWithGuard($entity, $prop, $attr);
                     } else {
                         $this->loadOneToOneInverse($entity, $prop, $attr); // <- correct loader
                     }
@@ -137,7 +145,7 @@ class RelationLoader extends EntityHelper
                     $isCollectionRelation = true;
                     /** @var OneToMany $attr */
                     $attr = $oneToManyAttrs[0]->newInstance();
-                    $this->loadOneToManyWithGuard($entity, $prop, $attr, $loadedEntities);
+                    $this->loadOneToManyWithGuard($entity, $prop, $attr);
                 }
 
                 // ManyToMany
@@ -145,12 +153,11 @@ class RelationLoader extends EntityHelper
                     $isCollectionRelation = true;
                     /** @var ManyToMany $attr */
                     $attr = $manyToManyAttrs[0]->newInstance();
-                    $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedEntities);
+                    $this->loadManyToManyWithGuard($entity, $prop, $attr);
                 }
             } catch (\Exception $e) {
                 error_log("Failed to load relation {$prop->getName()}: " . $e->getMessage());
-                $prop->setAccessible(true);
-                $prop->setValue($entity, $isCollectionRelation ? [] : null);
+                $this->safeSetProperty($prop, $entity, $isCollectionRelation ? [] : null);
             }
         }
     }
@@ -158,11 +165,16 @@ class RelationLoader extends EntityHelper
     protected function loadOneToOneInverse(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth >= $this->context->maxDepth) return;
+
+        // Early check for max depth
+        if (!$this->canGoDeeper($entity)) {
+            $this->safeSetProperty($prop, $entity, null);
+            return;
+        }
 
         $ownId = $this->getEntityId($entity);
         if (!$ownId) {
-            $prop->setValue($entity, null);
+            $this->safeSetProperty($prop, $entity, null);
             return;
         }
         $targetClass = $attr->targetEntity;
@@ -176,14 +188,19 @@ class RelationLoader extends EntityHelper
         $fkValue = $this->getEntityPropValue($entity, $fkColumn);
 
         if ($fkValue === null) {
-            $prop->setAccessible(true);
-            $prop->setValue($entity, null);
+            $this->safeSetProperty($prop, $entity, null);
             return;
         }
 
         if ($this->context->hasInstance($targetClass, $fkValue)) {
-            $prop->setAccessible(true);
-            $prop->setValue($entity, $this->context->getInstance($targetClass, $fkValue));
+            $instance = $this->context->getInstance($targetClass, $fkValue);
+            $this->safeSetProperty($prop, $entity, $instance);
+
+            // Check if we need to load relations for the existing instance
+            // This is important if this instance was registered but its relations weren't loaded
+            if ($instance && $this->canGoDeeper($instance)) {
+                $this->loadRelationsWithGuard($instance);
+            }
             return;
         }
 
@@ -193,8 +210,17 @@ class RelationLoader extends EntityHelper
             ->where("t.id", '=', $fkValue)
             ->fetch($targetClass);
         if ($row) {
-            $prop->setAccessible(true);
-            $prop->setValue($entity, $row);
+            $this->safeSetProperty($prop, $entity, $this->context->getInstance($targetClass, $fkValue));
+            return;
+        }
+
+        $qb = clone $this->qb;
+        $row = $qb->select(['t.*'])
+            ->from($targetTable, 't')
+            ->where("t.id", '=', $fkValue)
+            ->fetch($targetClass);
+        if ($row) {
+            $this->safeSetProperty($prop, $entity, $row);
 
             // Set the inverse side
             $inverseProp = $mappedBy ?: $inversedBy;
@@ -202,7 +228,24 @@ class RelationLoader extends EntityHelper
                 $row->$inverseProp = $entity;
             }
 
-            $this->context->registerInstance($targetClass, $fkValue, $row);
+            // Calculate the new depth - one level deeper than current entity
+            $newDepth = $currEntityDepth + 1;
+
+            if (!$this->context->hasInstance($targetClass, $fkValue)) {
+                $this->context->registerInstance($targetClass, $fkValue, $row);
+                $this->context->setDepth($row, $newDepth);
+            } else {
+                // Only update if the new path is shorter
+                $existingDepth = $this->context->getDepth($row);
+                if ($newDepth < $existingDepth) {
+                    $this->context->setDepth($row, $newDepth);
+                }
+            }
+
+            // Only load relations if we're not at max depth
+            if ($this->canGoDeeper($row)) {
+                $this->loadRelationsWithGuard($row);
+            }
         }
     }
 
@@ -212,22 +255,25 @@ class RelationLoader extends EntityHelper
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param ManyToOne $attr
-     * @param array<string, mixed> $loadedEntities Already loaded entities in this query
      */
-    protected function loadManyToOneWithGuard(object $entity, ReflectionProperty $prop, ManyToOne $attr, array &$loadedEntities): void
+    protected function loadManyToOneWithGuard(object $entity, ReflectionProperty $prop, ManyToOne $attr): void
     {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth >= $this->context->maxDepth) return;
 
-        $prop->setAccessible(true);
+        // Early check for max depth - consistent with other relationships
+        if (!$this->canGoDeeper($entity)) {
+            $this->safeSetProperty($prop, $entity, null);
+            return;
+        }
 
         // Resolve FK column on THIS table for this relation property
         $fkColumn = $this->getRelationColumnName($prop->getName());
 
+
         // Current entity PK
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
-            $prop->setValue($entity, null);
+            $this->safeSetProperty($prop, $entity, null);
             return;
         }
 
@@ -236,9 +282,10 @@ class RelationLoader extends EntityHelper
 
         // If FK not present on the object, fetch it minimally by THIS row's ID
         if ($fkValue === null) {
+
             $qb = clone $this->qb;
             $row = $qb->select([$fkColumn])
-                ->from($this->table)
+                ->from($this->tableOf(get_class($entity)))
                 ->where('id', '=', $entityId)
                 ->fetch();
 
@@ -249,29 +296,33 @@ class RelationLoader extends EntityHelper
         $fkValue = $this->normalizeFk($fkValue);
 
         if ($fkValue === null) {
-            $prop->setValue($entity, null);
+            $this->safeSetProperty($prop, $entity, null);
             return;
         }
 
         // Reuse from context or from the already-loaded map
         $targetClass = $attr->targetEntity;
-        $relatedKey  = $this->context->key($targetClass, $fkValue);
 
         if ($this->context->hasInstance($targetClass, $fkValue)) {
             $instance = $this->context->getInstance($targetClass, $fkValue);
             if (!$instance) {
-                $prop->setValue($entity, null);
+                $this->safeSetProperty($prop, $entity, null);
                 return;
             }
-            $prop->setValue($entity, $instance);
+            $this->safeSetProperty($prop, $entity, $instance);
+
+            // Only update depth if new path is shorter
             $newDepth = $currEntityDepth + 1;
             $existingDepth = $this->context->getDepth($instance);
-            if ($newDepth < $existingDepth) $this->context->setDepth($instance, $newDepth);
-            return;
-        }
+            if ($newDepth < $existingDepth) {
+                $this->context->setDepth($instance, $newDepth);
 
-        if (isset($loadedEntities[$relatedKey])) {
-            $prop->setValue($entity, $loadedEntities[$relatedKey]);
+                // Important: If we found a shorter path to this entity,
+                // we might need to load more relations now
+                if ($this->canGoDeeper($instance)) {
+                    $this->loadRelationsWithGuard($instance);
+                }
+            }
             return;
         }
 
@@ -285,19 +336,29 @@ class RelationLoader extends EntityHelper
 
         if ($relatedEntity) {
             $newDepth = $currEntityDepth + 1;
-            $this->context->registerInstance($targetClass, $fkValue, $relatedEntity);
-            $this->context->setDepth($relatedEntity, $newDepth);
-            $loadedEntities[$relatedKey] = $relatedEntity;
 
-            $prop->setValue($entity, $relatedEntity);
+            // Register the entity in our context with the proper depth
+            if (!$this->context->hasInstance($targetClass, $fkValue)) {
+                $this->context->registerInstance($targetClass, $fkValue, $relatedEntity);
+                $this->context->setDepth($relatedEntity, $newDepth);
+            } else {
+                // Only update depth if new path is shorter
+                $existingDepth = $this->context->getDepth($relatedEntity);
+                if ($newDepth < $existingDepth) {
+                    $this->context->setDepth($relatedEntity, $newDepth);
+                }
+            }
 
-            if ($newDepth < $this->context->maxDepth) {
-                $this->loadRelationsWithGuard($relatedEntity, $loadedEntities);
+            $this->safeSetProperty($prop, $entity, $relatedEntity);
+
+            // Only load deeper relations if we're not at max depth
+            if ($this->canGoDeeper($relatedEntity)) {
+                $this->loadRelationsWithGuard($relatedEntity);
             }
         } else {
             // Broken FK → null out the relation (alternatively: log/throw)
             error_log("Warning: Related entity {$targetClass} with ID {$fkValue} not found for ManyToOne");
-            $prop->setValue($entity, null);
+            $this->safeSetProperty($prop, $entity, null);
         }
     }
 
@@ -307,19 +368,15 @@ class RelationLoader extends EntityHelper
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param OneToOne $attr
-     * @param array<string, mixed> $loadedEntities Already loaded entities in this query
      */
-    protected function loadOneToOneWithGuard(object $entity, ReflectionProperty $prop, OneToOne $attr, array &$loadedEntities): void
+    protected function loadOneToOneWithGuard(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
-        $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth >= $this->context->maxDepth) return;
-
         // Same as ManyToOne for owning side
         $this->loadManyToOneWithGuard($entity, $prop, new ManyToOne(
             targetEntity: $attr->targetEntity,
             inversedBy: $attr->inversedBy,
             nullable: $attr->nullable
-        ), $loadedEntities);
+        ));
     }
 
     /**
@@ -328,21 +385,23 @@ class RelationLoader extends EntityHelper
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param OneToMany $attr
-     * @param array<string, mixed> $loadedEntities Already loaded entities in this query
      */
     protected function loadOneToManyWithGuard(
         object $entity,
         ReflectionProperty $prop,
         OneToMany $attr,
-        array &$loadedEntities
     ): void {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth >= $this->context->maxDepth) return;
 
-        $prop->setAccessible(true);
+        // Early check for max depth - using the helper method
+        if (!$this->canGoDeeper($entity)) {
+            $this->safeSetProperty($prop, $entity, []);
+            return;
+        }
+
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
-            $prop->setValue($entity, []);
+            $this->safeSetProperty($prop, $entity, []);
             return;
         }
 
@@ -350,7 +409,7 @@ class RelationLoader extends EntityHelper
         $targetTable = $this->tableOf($targetClass);
 
         if (!$attr->mappedBy) {
-            $prop->setValue($entity, []);
+            $this->safeSetProperty($prop, $entity, []);
             return;
         }
 
@@ -370,22 +429,33 @@ class RelationLoader extends EntityHelper
             $rowId = $this->getEntityId($row);
             if (!$rowId) continue;
 
-            $key = $this->context->key($targetClass, $rowId);
-
             if ($this->context->hasInstance($targetClass, $rowId)) {
                 $instance = $this->context->getInstance($targetClass, $rowId);
                 $dedup[] = $instance;
-                $loadedEntities[$key] = $instance;
+
+                // Update depth if new path is shorter
+                $existingDepth = $this->context->getDepth($instance);
+                if ($newDepth < $existingDepth) {
+                    $this->context->setDepth($instance, $newDepth);
+
+                    // If we found a shorter path, load more relations if possible
+                    if ($this->canGoDeeper($instance)) {
+                        $this->loadRelationsWithGuard($instance);
+                    }
+                }
             } else {
                 $this->context->registerInstance($targetClass, $rowId, $row);
                 $this->context->setDepth($row, $newDepth);
                 $dedup[] = $row;
-                $loadedEntities[$key] = $row;
-                $this->loadRelationsWithGuard($row, $loadedEntities);
+
+                // Only load relations if we're not at max depth
+                if ($this->canGoDeeper($row)) {
+                    $this->loadRelationsWithGuard($row);
+                }
             }
         }
 
-        $prop->setValue($entity, $dedup);
+        $this->safeSetProperty($prop, $entity, $dedup);
     }
 
     /**
@@ -394,29 +464,30 @@ class RelationLoader extends EntityHelper
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param ManyToMany $attr
-     * @param array<string, mixed> $loadedEntities Already loaded entities in this query
      */
     protected function loadManyToManyWithGuard(
         object             $entity,
         ReflectionProperty $prop,
         ManyToMany         $attr,
-        array              &$loadedEntities
     ): void {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth >= $this->context->maxDepth) return;
 
-        $prop->setAccessible(true);
+        // Early check for max depth - using the helper method for consistency
+        if (!$this->canGoDeeper($entity)) {
+            $this->safeSetProperty($prop, $entity, []);
+            return;
+        }
 
         $ownId = $this->getEntityId($entity);
         if (!$ownId) {
-            $prop->setValue($entity, []);
+            $this->safeSetProperty($prop, $entity, []);
             return;
         }
 
         try {
             [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName(), $entity);
         } catch (\Exception $e) {
-            $prop->setValue($entity, []);
+            $this->safeSetProperty($prop, $entity, []);
             return;
         }
 
@@ -437,21 +508,33 @@ class RelationLoader extends EntityHelper
             $rowId = $this->getEntityId($row);
             if (!$rowId) continue;
 
-            $key = $this->context->key($targetClass, $rowId);
-
             if ($this->context->hasInstance($targetClass, $rowId)) {
                 $instance = $this->context->getInstance($targetClass, $rowId);
                 $dedup[] = $instance;
-                $loadedEntities[$key] = $instance;
+
+                // Update depth if new path is shorter
+                $existingDepth = $this->context->getDepth($instance);
+                if ($newDepth < $existingDepth) {
+                    $this->context->setDepth($instance, $newDepth);
+
+                    // If we found a shorter path, load more relations if possible
+                    if ($this->canGoDeeper($instance)) {
+                        $this->loadRelationsWithGuard($instance);
+                    }
+                }
             } else {
                 $this->context->registerInstance($targetClass, $rowId, $row);
                 $this->context->setDepth($row, $newDepth);
                 $dedup[] = $row;
-                $loadedEntities[$key] = $row;
+
+                // Only load relations if we're not at max depth
+                if ($this->canGoDeeper($row)) {
+                    $this->loadRelationsWithGuard($row);
+                }
             }
         }
 
-        $prop->setValue($entity, $dedup);
+        $this->safeSetProperty($prop, $entity, $dedup);
     }
 
     /**
@@ -461,17 +544,19 @@ class RelationLoader extends EntityHelper
     {
         $currEntityDepth = $this->context->getDepth($entity);
 
-        if ($currEntityDepth >= $this->context->maxDepth) return;
+        // Early check for max depth using helper
+        if (!$this->canGoDeeper($entity)) {
+            $this->safeSetProperty($prop, $entity, null);
+            return;
+        }
 
-        $prop->setAccessible(true);
-
-        // Determine FK column
+        // Resolve FK column on THIS table for this relation property
         $fkColumn = $this->getRelationColumnName($prop->getName());
 
-        // Get this entity's ID
+        // Current entity PK
         $entityId = $this->getEntityId($entity);
         if (!$entityId) {
-            $prop->setValue($entity, null);
+            $this->safeSetProperty($prop, $entity, null);
             return;
         }
 
@@ -493,7 +578,7 @@ class RelationLoader extends EntityHelper
         $fkValue = $this->normalizeFk($fkValue);
 
         if ($fkValue === null) {
-            $prop->setValue($entity, null);
+            $this->safeSetProperty($prop, $entity, null);
             return;
         }
 
@@ -501,10 +586,10 @@ class RelationLoader extends EntityHelper
         if ($this->context->hasInstance($attr->targetEntity, $fkValue)) {
             $instance = $this->context->getInstance($attr->targetEntity, $fkValue);
             if (!$instance) {
-                $prop->setValue($entity, null);
+                $this->safeSetProperty($prop, $entity, null);
                 return;
             }
-            $prop->setValue($entity, $instance);
+            $this->safeSetProperty($prop, $entity, $instance);
 
             // Fix: Don't increment instance depth, set it relative to current entity
             $newDepth = $currEntityDepth + 1;
@@ -513,6 +598,11 @@ class RelationLoader extends EntityHelper
             // Only update depth if the new path is shallower
             if ($newDepth < $existingDepth) {
                 $this->context->setDepth($instance, $newDepth);
+
+                // If we found a shorter path, we might need to load more relations
+                if ($this->canGoDeeper($instance)) {
+                    $this->loadRelations($instance);
+                }
             }
             return;
         }
@@ -532,13 +622,78 @@ class RelationLoader extends EntityHelper
             $this->context->setDepth($relatedEntity, $newDepth);
 
             // Recursively load relations for this entity if we're not at max depth
-            if ($newDepth < $this->context->maxDepth) {
+            if ($this->canGoDeeper($relatedEntity)) {
                 $this->loadRelations($relatedEntity);
             }
         }
 
         // Set the property value
-        $prop->setValue($entity, $relatedEntity ?: null);
+        $this->safeSetProperty($prop, $entity, $relatedEntity ?: null);
+    }
+
+    /**
+     * Load a OneToMany relationship.
+     */
+    protected function loadOneToMany(object $entity, ReflectionProperty $prop, OneToMany $attr): void
+    {
+        $currEntityDepth = $this->context->getDepth($entity);
+
+        // Early check using helper
+        if (!$this->canGoDeeper($entity)) {
+            $this->safeSetProperty($prop, $entity, []);
+            return;
+        }
+
+        $entityId = $this->getEntityId($entity);
+        if (!$entityId) {
+            $this->safeSetProperty($prop, $entity, []);
+            return;
+        }
+
+        $targetTable = $this->tableOf($attr->targetEntity);
+
+        if (!$attr->mappedBy) {
+            $this->safeSetProperty($prop, $entity, []);
+            return;
+        }
+        $fkColumn = $this->getRelationColumnName($attr->mappedBy, $targetTable);
+
+        $qb = clone $this->qb;
+        $related = $qb->select()
+            ->from($targetTable)
+            ->where($fkColumn, '=', $entityId)
+            ->fetchAll($attr->targetEntity);
+
+        $this->safeSetProperty($prop, $entity, $related);
+
+        // Set proper depth for related entities and load their relations
+        $newDepth = $currEntityDepth + 1;
+        foreach ($related as $rel) {
+            $relId = $this->getEntityId($rel);
+            if ($relId === null) continue;
+
+            // Check if we already have this instance
+            if ($this->context->hasInstance($attr->targetEntity, $relId)) {
+                $instance = $this->context->getInstance($attr->targetEntity, $relId);
+                $existingDepth = $this->context->getDepth($instance);
+
+                // If we found a shorter path, update depth and reload relations
+                if ($newDepth < $existingDepth) {
+                    $this->context->setDepth($instance, $newDepth);
+                    if ($this->canGoDeeper($instance)) {
+                        $this->loadRelations($instance);
+                    }
+                }
+            } else {
+                $this->context->registerInstance($attr->targetEntity, $relId, $rel);
+                $this->context->setDepth($rel, $newDepth);
+
+                // Only load deeper relations if we're not at max depth
+                if ($this->canGoDeeper($rel)) {
+                    $this->loadRelations($rel);
+                }
+            }
+        }
     }
 
     /**
@@ -558,55 +713,41 @@ class RelationLoader extends EntityHelper
     }
 
     /**
-     * Load a OneToMany relationship.
+     * Check if a property type allows null values
      */
-    protected function loadOneToMany(object $entity, ReflectionProperty $prop, OneToMany $attr): void
+    protected function isPropertyNullable(ReflectionProperty $prop): bool
     {
-        $currEntityDepth = $this->context->getDepth($entity);
+        $type = $prop->getType();
+        if (!$type) return true; // No type hint = nullable
 
-        if ($currEntityDepth >= $this->context->maxDepth) {
-            $prop->setAccessible(true);
-            $prop->setValue($entity, []);
-            return;
-        }
-
-        $prop->setAccessible(true);
-        $entityId = $this->getEntityId($entity);
-        if (!$entityId) {
-            $prop->setValue($entity, []);
-            return;
-        }
-
-        $targetTable = $this->tableOf($attr->targetEntity);
-
-        if (!$attr->mappedBy) {
-            $prop->setValue($entity, []);
-            return;
-        }
-        $fkColumn = $this->getRelationColumnName($attr->mappedBy, $targetTable);
-
-        $qb = clone $this->qb;
-        $related = $qb->select()
-            ->from($targetTable)
-            ->where($fkColumn, '=', $entityId)
-            ->fetchAll($attr->targetEntity);
-
-        $prop->setValue($entity, $related);
-
-        // Set proper depth for related entities and load their relations
-        $newDepth = $currEntityDepth + 1;
-        if ($newDepth < $this->context->maxDepth) {
-            foreach ($related as $rel) {
-                $relId = $this->getEntityId($rel);
-                if ($relId === null) continue;
-                $this->context->registerInstance($attr->targetEntity, $relId, $rel);
-                $this->context->setDepth($rel, $newDepth);
-
-                // Only load deeper relations if we're not at max depth
-                if ($newDepth < $this->context->maxDepth) {
-                    $this->loadRelations($rel);
+        if ($type instanceof \ReflectionUnionType) {
+            foreach ($type->getTypes() as $unionType) {
+                if ($unionType instanceof \ReflectionNamedType && $unionType->getName() === 'null') {
+                    return true;
                 }
             }
+            return false;
         }
+
+        if ($type instanceof \ReflectionNamedType) {
+            return $type->allowsNull();
+        }
+
+        return true; // Default to nullable for safety
+    }
+
+    /**
+     * Safely set a property value, respecting nullability constraints
+     */
+    protected function safeSetProperty(ReflectionProperty $prop, object $entity, mixed $value): void
+    {
+        $prop->setAccessible(true);
+
+        if ($value === null && !$this->isPropertyNullable($prop)) {
+            // Don't set non-nullable properties to null - leave them uninitialized
+            return;
+        }
+
+        $prop->setValue($entity, $value);
     }
 }

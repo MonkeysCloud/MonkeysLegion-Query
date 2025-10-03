@@ -22,7 +22,7 @@ abstract class EntityRepository extends RelationLoader
 {
     public function __construct(QueryBuilder $qb)
     {
-        $this->context = new HydrationContext(2);
+        $this->context = new HydrationContext(4);
         $this->qb = $qb;
     }
 
@@ -110,21 +110,20 @@ abstract class EntityRepository extends RelationLoader
 
         $entities = $qb->fetchAll($this->entityClass);
 
-        // Track loaded entities to prevent circular loading
-        $loadedEntities = [];
-
         foreach ($entities as $entity) {
             $this->storeOriginalValues($entity);
 
             if ($loadRelations) {
+                // Reset context for each root entity to ensure proper depth calculation
                 $entityId = $this->getEntityId($entity);
-                $entityKey = get_class($entity) . ':' . $entityId;
-
-                // Mark this entity as being loaded
-                $loadedEntities[$entityKey] = $entity;
-
-                // Load relations with protection against circular references
-                $this->loadRelationsWithGuard($entity, $loadedEntities);
+                if ($entityId !== null) {
+                    // Register as a root entity with depth 0
+                    $entityClass = get_class($entity);
+                    $this->context->registerInstance($entityClass, $entityId, $entity);
+                    $this->context->setDepth($entity, 0);
+                    // Load relations with guard
+                    $this->loadRelationsWithGuard($entity);
+                }
             }
         }
 

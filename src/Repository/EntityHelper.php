@@ -202,6 +202,8 @@ class EntityHelper
         $ref  = new ReflectionClass($entity);
 
         foreach ($ref->getProperties() as $prop) {
+            if (!$prop->isInitialized($entity)) continue;
+
             // Handle Field attributes
             if ($prop->getAttributes(Field::class)) {
                 // Skip uninitialized id on insert
