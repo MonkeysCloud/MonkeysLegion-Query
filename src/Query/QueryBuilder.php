@@ -1,9 +1,10 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query;
 
-use MonkeysLegion\Database\MySQL\Connection;
+use MonkeysLegion\Database\Contracts\ConnectionInterface;
 use MonkeysLegion\Entity\Hydrator;
 use PDO;
 
@@ -43,9 +44,9 @@ final class QueryBuilder
     /**
      * Constructor.
      *
-     * @param Connection $conn Database connection instance.
+     * @param ConnectionInterface $conn Database connection instance.
      */
-    public function __construct(private Connection $conn) {}
+    public function __construct(private ConnectionInterface $conn) {}
 
     /**
      * Sets the SELECT columns.
@@ -690,7 +691,6 @@ final class QueryBuilder
             $cnt = (int)($row['cnt'] ?? 0);
 
             return $cnt;
-
         } catch (\PDOException $e) {
             error_log('[qb.count] PDOException: ' . $e->getMessage() . ' code=' . $e->getCode());
             throw $e;
@@ -702,7 +702,7 @@ final class QueryBuilder
 
     /* ===================== helpers (with logs) ===================== */
 
-// Deterministic mapping first. Extend at bootstrap via setTableMap().
+    // Deterministic mapping first. Extend at bootstrap via setTableMap().
     private array $tableMap = [
         // 'messages' => 'message',
     ];
@@ -829,22 +829,24 @@ final class QueryBuilder
     private function tableExists(string $table, ?string $schema = null): bool
     {
         try {
-            $sql = "SELECT 1
-                  FROM information_schema.tables
-                 WHERE table_name = :t
-                   AND table_schema = COALESCE(:s, DATABASE())
-                 LIMIT 1";
-            $stmt = $this->conn->pdo()->prepare($sql);
-            $ok   = $stmt->execute([':t' => $table, ':s' => $schema]);
+            $driver = $this->pdo()->getAttribute(PDO::ATTR_DRIVER_NAME);
 
-            if (!$ok) {
-                [$state, $code, $msg] = $stmt->errorInfo();
-                error_log("[qb.exists] errorInfo for '" . ($schema ? "$schema.$table" : $table) . "': $state/$code – $msg");
-                return false;
+            if ($driver === 'sqlite') {
+                $sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = :t";
+                $stmt = $this->conn->pdo()->prepare($sql);
+                $stmt->execute([':t' => $table]);
+                return (bool) $stmt->fetchColumn();
             }
 
-            $exists = (bool)$stmt->fetchColumn();
-            return $exists;
+            // MySQL / MariaDB
+            $sql = "SELECT 1
+              FROM information_schema.tables
+             WHERE table_name = :t
+               AND table_schema = COALESCE(:s, DATABASE())
+             LIMIT 1";
+            $stmt = $this->conn->pdo()->prepare($sql);
+            $stmt->execute([':t' => $table, ':s' => $schema]);
+            return (bool) $stmt->fetchColumn();
         } catch (\Throwable $e) {
             error_log("[qb.exists] Throwable for '" . ($schema ? "$schema.$table" : $table) . "': " . $e->getMessage());
             return false;
@@ -1340,7 +1342,7 @@ final class QueryBuilder
     /**
      * Expose the Connection.
      */
-    public function connection(): Connection
+    public function connection(): ConnectionInterface
     {
         return $this->conn;
     }
@@ -1389,4 +1391,8 @@ final class QueryBuilder
         return $this;
     }
 
+    public function exec(string $sql): int
+    {
+        return $this->pdo()->exec($sql);
+    }
 }
