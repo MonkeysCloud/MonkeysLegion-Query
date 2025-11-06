@@ -1622,6 +1622,22 @@ final class QueryBuilder
         return $this;
     }
 
+    /**
+     * Adds a raw OR condition to the WHERE clause.
+     */
+    public function orWhereRaw(string $sql, array $params = []): self
+    {
+        foreach ($params as $value) {
+            $placeholder = $this->addParam($value);
+            $sql = preg_replace('/\?/', $placeholder, $sql, 1);
+        }
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => $sql,
+        ];
+        return $this;
+    }
+
     public function exec(string $sql): int
     {
         return $this->pdo()->exec($sql);
