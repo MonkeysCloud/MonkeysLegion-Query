@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use MonkeysLegion\Entity\Attributes\ManyToMany;
 use MonkeysLegion\Entity\Attributes\Uuid;
 use MonkeysLegion\Entity\Hydrator;
+use MonkeysLegion\Entity\Utils\Uuid as UuidUtil;
 use MonkeysLegion\Query\QueryBuilder;
 use ReflectionClass;
 use ReflectionProperty;
@@ -223,7 +224,7 @@ abstract class EntityRepository extends RelationLoader
                 }
             } elseif ($isUuid && !$idProp->isInitialized($entity)) {
                 // Generate UUID for new entity
-                $uuidValue = Uuid::generate();
+                $uuidValue = UuidUtil::v4();
                 $idProp->setValue($entity, $uuidValue);
             }
         }

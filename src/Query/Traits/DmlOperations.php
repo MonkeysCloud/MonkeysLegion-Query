@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Traits;
 
-use MonkeysLegion\Entity\Attributes\Uuid;
+use MonkeysLegion\Entity\Utils\Uuid;
 
 /**
  * Provides Data Manipulation Language (DML) operations for the query builder.
