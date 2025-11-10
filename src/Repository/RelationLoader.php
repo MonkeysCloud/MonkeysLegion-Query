@@ -11,7 +11,7 @@ use MonkeysLegion\Entity\Attributes\OneToOne;
 use ReflectionClass;
 use ReflectionProperty;
 
-class RelationLoader extends EntityHelper
+abstract class RelationLoader extends EntityHelper
 {
     /**
      * Check if an entity can have deeper relations loaded
@@ -21,8 +21,7 @@ class RelationLoader extends EntityHelper
      */
     private function canGoDeeper(object $entity): bool
     {
-        $canGo = $this->context->getDepth($entity) < $this->context->maxDepth;
-        return $canGo;
+        return $this->context->getDepth($entity) < ($this->context->maxDepth + 1);
     }
 
     /**
