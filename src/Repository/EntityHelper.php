@@ -14,7 +14,7 @@ use MonkeysLegion\Entity\Attributes\Field;
 use ReflectionClass;
 use ReflectionProperty;
 
-class EntityHelper
+abstract class EntityHelper
 {
     protected string $table;
     /** @var array<string, string> $tables */
@@ -369,12 +369,12 @@ class EntityHelper
     /**
      * Get entity ID value.
      */
-    protected function getEntityId(object $entity): ?int
+    protected function getEntityId(object $entity): ?string
     {
         if (property_exists($entity, 'id')) {
             $idProp = new ReflectionProperty($entity, 'id');
             $idProp->setAccessible(true);
-            return $idProp->isInitialized($entity) ? $idProp->getValue($entity) : null;
+            return $idProp->isInitialized($entity) ? (string) $idProp->getValue($entity) : null;
         }
         return null;
     }
@@ -428,7 +428,7 @@ class EntityHelper
      *  • One-to-One    → same — only on the *inverse* side (mappedBy)
      *  • Many-to-One   → no action required (FK sits on the row we're deleting)
      */
-    protected function cascadeDeleteRelations(int $id): void
+    protected function cascadeDeleteRelations(string $id): void
     {
         $rc  = new \ReflectionClass($this->entityClass);
         $pdo = $this->qb->pdo();
