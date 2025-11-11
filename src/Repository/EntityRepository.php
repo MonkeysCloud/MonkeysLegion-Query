@@ -20,6 +20,12 @@ use ReflectionProperty;
  */
 abstract class EntityRepository extends RelationLoader
 {
+    /**
+     * Store original collection state for change detection
+     * @var array<int, array<string, array>>
+     */
+    private array $originalCollections = [];
+
     public function __construct(QueryBuilder $qb)
     {
         $this->context = new HydrationContext(4);
@@ -52,11 +58,17 @@ abstract class EntityRepository extends RelationLoader
             ->fetch($this->entityClass);
 
         if ($entity) {
-            // Store original values for change detection
+            // Inject repository reference
+            if (method_exists($entity, 'setRepository')) {
+                $entity->setRepository($this);
+            }
+
             $this->storeOriginalValues($entity);
 
             if ($loadRelations) {
                 $this->loadRelations($entity);
+                // ✅ Store collection state AFTER loading relations
+                $this->storeOriginalCollections($entity);
             }
         }
 
@@ -114,15 +126,14 @@ abstract class EntityRepository extends RelationLoader
             $this->storeOriginalValues($entity);
 
             if ($loadRelations) {
-                // Reset context for each root entity to ensure proper depth calculation
                 $entityId = $this->getEntityId($entity);
                 if ($entityId !== null) {
-                    // Register as a root entity with depth 0
                     $entityClass = get_class($entity);
                     $this->context->registerInstance($entityClass, $entityId, $entity);
                     $this->context->setDepth($entity, 0);
-                    // Load relations with guard
                     $this->loadRelationsWithGuard($entity);
+                    // ✅ Store collection state AFTER loading relations
+                    $this->storeOriginalCollections($entity);
                 }
             }
         }
@@ -540,7 +551,57 @@ abstract class EntityRepository extends RelationLoader
         }
 
         $this->storeOriginalValues($entity);
+
+        // ✅ Auto-sync ManyToMany collection changes after successful save
+        $this->syncCollections($entity);
+
         return (int)($verifyRow->id ?? $id);
+    }
+
+    public function delete(int|object $idOrEntity): int
+    {
+        // Extract ID from entity or use provided ID
+        if (is_object($idOrEntity)) {
+            if (!property_exists($idOrEntity, 'id')) {
+                throw new InvalidArgumentException('Entity has no id property');
+            }
+            $rp = new ReflectionProperty($idOrEntity, 'id');
+            $rp->setAccessible(true);
+            $id = (int) $rp->getValue($idOrEntity);
+
+            // Clean up stored original values
+            unset($this->originalValues[spl_object_id($idOrEntity)]);
+
+            // ✅ Clear any pending collection changes (don't sync them)
+            $oid = spl_object_id($idOrEntity);
+            unset($this->originalCollections[$oid]);
+        } else {
+            $id = $idOrEntity;
+        }
+
+        if ($id <= 0) {
+            throw new InvalidArgumentException('Invalid ID for deletion');
+        }
+
+        // Check if entity exists before deletion
+        $existing = $this->find($id, false);
+        if (!$existing) {
+            return 0;
+        }
+
+        try {
+            // ① wipe / null related rows first (already handles ManyToMany cleanup)
+            $this->cascadeDeleteRelations($id);
+
+            // ② hard-delete the entity with plain PDO
+            $pdo = $this->qb->pdo();
+            $sql = "DELETE FROM `{$this->table}` WHERE `id` = ? LIMIT 1";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$id]);
+            return $stmt->rowCount();
+        } catch (\Throwable $e) {
+            throw $e;
+        }
     }
 
     /**
@@ -562,54 +623,6 @@ abstract class EntityRepository extends RelationLoader
         $row = $qb->fetch();
         if (!$row) return 0;
         return (int) ($row->count ?? 0);
-    }
-
-    /**
-     * Delete entity by primary key.
-     *
-     * @param int|object $idOrEntity The primary key of the entity to delete or entity instance.
-     * @return int The number of affected rows (should be 1 for successful delete).
-     */
-    public function delete(int|object $idOrEntity): int
-    {
-        // Extract ID from entity or use provided ID
-        if (is_object($idOrEntity)) {
-            if (!property_exists($idOrEntity, 'id')) {
-                throw new InvalidArgumentException('Entity has no id property');
-            }
-            $rp = new ReflectionProperty($idOrEntity, 'id');
-            $rp->setAccessible(true);
-            $id = (int) $rp->getValue($idOrEntity);
-
-            // Clean up stored original values
-            unset($this->originalValues[spl_object_id($idOrEntity)]);
-        } else {
-            $id = $idOrEntity;
-        }
-
-        if ($id <= 0) {
-            throw new InvalidArgumentException('Invalid ID for deletion');
-        }
-
-        // Check if entity exists before deletion
-        $existing = $this->find($id, false); // Don't load relations for performance
-        if (!$existing) {
-            return 0;
-        }
-
-        try {
-            // ① wipe / null related rows first
-            $this->cascadeDeleteRelations($id);
-
-            // ② hard-delete the entity with plain PDO
-            $pdo = $this->qb->pdo();
-            $sql = "DELETE FROM `{$this->table}` WHERE `id` = ? LIMIT 1";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([$id]);
-            return $stmt->rowCount();
-        } catch (\Throwable $e) {
-            throw $e;
-        }
     }
 
     /**
@@ -764,4 +777,145 @@ abstract class EntityRepository extends RelationLoader
             ->andWhere($invCol, '=', $value)
             ->execute();
     }
+
+    /**
+     * Store original collection values for change detection
+     *
+     * @param object $entity The entity instance
+     *
+     */
+    private function storeOriginalCollections(object $entity): void
+    {
+        $oid = spl_object_id($entity);
+        $this->originalCollections[$oid] = [];
+
+        $ref = new \ReflectionClass($entity);
+        foreach ($ref->getProperties() as $prop) {
+            // Check if property has ManyToMany attribute
+            $attrs = $prop->getAttributes(ManyToMany::class);
+            if (!$attrs) continue;
+
+            $prop->setAccessible(true);
+            if (!$prop->isInitialized($entity)) continue;
+
+            $value = $prop->getValue($entity);
+            if (!is_array($value)) continue;
+
+            // Store IDs of related entities
+            $ids = [];
+            foreach ($value as $relatedEntity) {
+                if (is_object($relatedEntity) && property_exists($relatedEntity, 'id')) {
+                    $idProp = new \ReflectionProperty($relatedEntity, 'id');
+                    $idProp->setAccessible(true);
+                    if ($idProp->isInitialized($relatedEntity)) {
+                        $ids[] = (int)$idProp->getValue($relatedEntity);
+                    }
+                }
+            }
+
+            $this->originalCollections[$oid][$prop->getName()] = $ids;
+        }
+    }
+
+    /**
+     * Detect collection changes by comparing current state with original
+     *
+     * @param object $entity The entity instance
+     * @return array
+     *
+     */
+    private function detectCollectionChanges(object $entity): array
+    {
+        $oid = spl_object_id($entity);
+
+        if (!isset($this->originalCollections[$oid])) {
+            return ['added' => [], 'removed' => []];
+        }
+
+        $changes = ['added' => [], 'removed' => []];
+        $original = $this->originalCollections[$oid];
+
+        $ref = new \ReflectionClass($entity);
+        foreach ($ref->getProperties() as $prop) {
+            $attrs = $prop->getAttributes(ManyToMany::class);
+            if (!$attrs) continue;
+
+            $propName = $prop->getName();
+            $prop->setAccessible(true);
+
+            if (!$prop->isInitialized($entity)) continue;
+
+            $currentValue = $prop->getValue($entity);
+            if (!is_array($currentValue)) continue;
+
+            // Get current IDs
+            $currentIds = [];
+            foreach ($currentValue as $relatedEntity) {
+                if (is_object($relatedEntity) && property_exists($relatedEntity, 'id')) {
+                    $idProp = new \ReflectionProperty($relatedEntity, 'id');
+                    $idProp->setAccessible(true);
+                    if ($idProp->isInitialized($relatedEntity)) {
+                        $currentIds[] = (int)$idProp->getValue($relatedEntity);
+                    }
+                }
+            }
+
+            $originalIds = $original[$propName] ?? [];
+
+            // Detect additions
+            $added = array_diff($currentIds, $originalIds);
+            if (!empty($added)) {
+                $changes['added'][$propName] = array_values($added);
+            }
+
+            // Detect removals
+            $removed = array_diff($originalIds, $currentIds);
+            if (!empty($removed)) {
+                $changes['removed'][$propName] = array_values($removed);
+            }
+        }
+
+        return $changes;
+    }
+
+    /**
+     * Persist ManyToMany collection changes to database
+     *
+     * @param object $entity The entity instance
+     * @return int Total number of affected rows
+     * @throws \ReflectionException
+     */
+    public function syncCollections(object $entity): int
+    {
+        // Detect what changed
+        $changes = $this->detectCollectionChanges($entity);
+        $totalAffected = 0;
+
+        // Process additions
+        foreach ($changes['added'] as $property => $ids) {
+            foreach ($ids as $id) {
+                try {
+                    $totalAffected += $this->attachRelation($entity, $property, $id);
+                } catch (\PDOException $e) {
+                    // Ignore duplicate key errors (1062)
+                    if (isset($e->errorInfo[1]) && (int)$e->errorInfo[1] !== 1062) {
+                        throw $e;
+                    }
+                }
+            }
+        }
+
+        // Process removals
+        foreach ($changes['removed'] as $property => $ids) {
+            foreach ($ids as $id) {
+                $totalAffected += $this->detachRelation($entity, $property, $id);
+            }
+        }
+
+        // Update stored collections to reflect new state
+        $this->storeOriginalCollections($entity);
+
+        return $totalAffected;
+    }
+
 }
