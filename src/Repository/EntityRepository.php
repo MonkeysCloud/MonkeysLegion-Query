@@ -6,7 +6,9 @@ namespace MonkeysLegion\Repository;
 
 use InvalidArgumentException;
 use MonkeysLegion\Entity\Attributes\ManyToMany;
+use MonkeysLegion\Entity\Attributes\Uuid;
 use MonkeysLegion\Entity\Hydrator;
+use MonkeysLegion\Entity\Utils\Uuid as UtilsUuid;
 use MonkeysLegion\Query\QueryBuilder;
 use ReflectionClass;
 use ReflectionProperty;
@@ -20,12 +22,6 @@ use ReflectionProperty;
  */
 abstract class EntityRepository extends RelationLoader
 {
-    /**
-     * Store original collection state for change detection
-     * @var array<int, array<string, array>>
-     */
-    private array $originalCollections = [];
-
     public function __construct(QueryBuilder $qb)
     {
         $this->context = new HydrationContext(3); // default max depth
@@ -40,15 +36,15 @@ abstract class EntityRepository extends RelationLoader
      * @return object|null The found entity or null if not found.
      * @throws \ReflectionException
      */
-    public function find(int|object $idOrEntity, bool $loadRelations = true): ?object
+    public function find(int|string|object $idOrEntity, bool $loadRelations = true): ?object
     {
         // ☞ accept entity or id
         if (is_object($idOrEntity)) {
             $rp = new \ReflectionProperty($idOrEntity, 'id');
             $rp->setAccessible(true);
-            $id = (int) $rp->getValue($idOrEntity);
+            $id = (string) $rp->getValue($idOrEntity);
         } else {
-            $id = (int) $idOrEntity;
+            $id = (string) $idOrEntity;
         }
 
         $qb = clone $this->qb;
@@ -58,17 +54,11 @@ abstract class EntityRepository extends RelationLoader
             ->fetch($this->entityClass);
 
         if ($entity) {
-            // Inject repository reference
-            if (method_exists($entity, 'setRepository')) {
-                $entity->setRepository($this);
-            }
-
+            // Store original values for change detection
             $this->storeOriginalValues($entity);
 
             if ($loadRelations) {
                 $this->loadRelations($entity);
-                // ✅ Store collection state AFTER loading relations
-                $this->storeOriginalCollections($entity);
             }
         }
 
@@ -126,14 +116,15 @@ abstract class EntityRepository extends RelationLoader
             $this->storeOriginalValues($entity);
 
             if ($loadRelations) {
+                // Reset context for each root entity to ensure proper depth calculation
                 $entityId = $this->getEntityId($entity);
                 if ($entityId !== null) {
+                    // Register as a root entity with depth 0
                     $entityClass = get_class($entity);
                     $this->context->registerInstance($entityClass, $entityId, $entity);
                     $this->context->setDepth($entity, 0);
+                    // Load relations with guard
                     $this->loadRelationsWithGuard($entity);
-                    // ✅ Store collection state AFTER loading relations
-                    $this->storeOriginalCollections($entity);
                 }
             }
         }
@@ -180,18 +171,71 @@ abstract class EntityRepository extends RelationLoader
      * @param bool $partial If true, only update changed fields (default: true for updates)
      * @return int The ID of the saved entity or number of affected rows.
      */
-    public function save(object $entity, bool $partial = true, bool $upsert = false): int
+    public function save(object $entity, bool $partial = true, bool $upsert = false): int|string
     {
+        // ——— Check if entity uses UUID
+        $rc = new \ReflectionClass($entity);
+        $isUuid = false;
+        $uuidValue = null;
+
+        if ($rc->hasProperty('id')) {
+            $idProp = $rc->getProperty('id');
+
+            // Check for #[Uuid] attribute
+            $uuidAttrs = $idProp->getAttributes(Uuid::class);
+            if ($uuidAttrs) {
+                $isUuid = true;
+            }
+
+            // Check for #[Field(type: 'uuid')]
+            if (!$isUuid) {
+                $fieldAttrs = $idProp->getAttributes(\MonkeysLegion\Entity\Attributes\Field::class);
+                if ($fieldAttrs) {
+                    $fieldAttr = $fieldAttrs[0]->newInstance();
+                    if (isset($fieldAttr->type) && strtolower($fieldAttr->type) === 'uuid') {
+                        $isUuid = true;
+                    }
+                }
+            }
+        }
+
         // ——— decide update vs insert
         $isUpdate = false;
         if (property_exists($entity, 'id')) {
             $idProp = new \ReflectionProperty($entity, 'id');
             $idProp->setAccessible(true);
-            if ($idProp->isInitialized($entity) && $idProp->getValue($entity)) $isUpdate = true;
+            if ($idProp->isInitialized($entity) && $idProp->getValue($entity)) {
+                // For UUID: only consider it an update if we can verify the record exists
+                if ($isUuid) {
+                    $existingId = $idProp->getValue($entity);
+                    // Check if this UUID already exists in the database
+                    try {
+                        $check = (clone $this->qb)->select(['id'])->from($this->table)->where('id', '=', $existingId)->fetch();
+                        if ($check && isset($check->id)) {
+                            $isUpdate = true;
+                            $uuidValue = $existingId;
+                        }
+                    } catch (\Throwable $e) {
+                        error_log("[EntityRepository::save] Error checking UUID existence: " . $e->getMessage());
+                    }
+                } else {
+                    // For auto-increment IDs, if it's set and > 0, it's an update
+                    $isUpdate = true;
+                }
+            } elseif ($isUuid && !$idProp->isInitialized($entity)) {
+                // Generate UUID for new entity
+                $uuidValue = UtilsUuid::v4();
+                $idProp->setValue($entity, $uuidValue);
+            }
         }
 
         // ——— collect data
         $data = ($isUpdate && $partial) ? $this->getChangedFields($entity) : $this->extractPersistableData($entity);
+
+        // If UUID and not updating, ensure UUID is in data
+        if ($isUuid && !$isUpdate && $uuidValue) {
+            $data['id'] = $uuidValue;
+        }
 
         // ——— normalize scalars
         foreach ($data as $key => $value) {
@@ -383,22 +427,27 @@ abstract class EntityRepository extends RelationLoader
         $chosenUnique   = $candidateUnique[0] ?? null;
         $naturalKeyCols = $chosenUnique['cols'] ?? [];
 
-        // Try to match existing row by natural key
+        // Try to match existing row by natural key (only if not already determined to be update)
         if (!$isUpdate && $naturalKeyCols) {
             $keyMap = [];
             foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
             $existing = $selectIdByKey($keyMap);
             if ($existing && isset($existing->id)) {
                 $isUpdate = true;
-                $data['id'] = (int)$existing->id;
+                $data['id'] = $existing->id;
+                if ($isUuid) {
+                    $uuidValue = $existing->id;
+                }
             }
         }
 
-        // ——— UPDATE path
-        if (!empty($data['id'])) {
-            $id = (int)$data['id'];
+        // ——— UPDATE path (use $isUpdate flag, not just presence of id)
+        if ($isUpdate && !empty($data['id'])) {
+            $id = $data['id'];
             unset($data['id']);
-            if (empty($data)) return 0;
+            if (empty($data)) {
+                return 0;
+            }
             $setParts = [];
             foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
             $sql = "UPDATE `{$this->table}` SET " . implode(', ', $setParts) . " WHERE `id` = :_id";
@@ -407,10 +456,11 @@ abstract class EntityRepository extends RelationLoader
                 foreach ($data as $col => $val) {
                     $stmt->bindValue(":{$col}", $val);
                 }
-                $stmt->bindValue(":_id", $id, \PDO::PARAM_INT);
+                $stmt->bindValue(":_id", $id);
                 $stmt->execute();
+                $rowCount = $stmt->rowCount();
                 $this->storeOriginalValues($entity);
-                return $stmt->rowCount();
+                return $rowCount;
             } catch (\PDOException $e) {
                 throw $e;
             }
@@ -456,7 +506,7 @@ abstract class EntityRepository extends RelationLoader
             if (in_array('subscribed_at', $cols, true)) $sql .= ", `subscribed_at` = VALUES(`subscribed_at`)";
         }
 
-        $id = 0;
+        $id = $isUuid ? $uuidValue : 0;
         $retriedAfterRepair = false;
 
         while (true) {
@@ -466,7 +516,11 @@ abstract class EntityRepository extends RelationLoader
                     $stmt->bindValue(":{$col}", $val);
                 }
                 $stmt->execute();
-                $id = (int)$pdo->lastInsertId();
+
+                // For UUID, use the value we set; for auto-increment, get lastInsertId
+                if (!$isUuid) {
+                    $id = (int)$pdo->lastInsertId();
+                }
                 break;
             } catch (\PDOException $e) {
                 $mysqlCode = isset($e->errorInfo[1]) ? (int)$e->errorInfo[1] : 0;
@@ -477,7 +531,7 @@ abstract class EntityRepository extends RelationLoader
                     foreach ($naturalKeyCols as $c) $keyMap[$c] = $data[$c];
                     $row = $selectIdByKey($keyMap);
                     if ($row && isset($row->id)) {
-                        $existingId = (int)$row->id;
+                        $existingId = $row->id;
                         $setParts = [];
                         foreach ($data as $col => $_) $setParts[] = "`{$col}` = :{$col}";
                         $updateSql = "UPDATE `{$this->table}` SET " . implode(', ', $setParts) . " WHERE `id` = :_id";
@@ -485,7 +539,7 @@ abstract class EntityRepository extends RelationLoader
                         foreach ($data as $col => $val) {
                             $stmt->bindValue(":{$col}", $val);
                         }
-                        $stmt->bindValue(":_id", $existingId, \PDO::PARAM_INT);
+                        $stmt->bindValue(":_id", $existingId);
                         $stmt->execute();
 
                         if (property_exists($entity, 'id')) {
@@ -532,7 +586,7 @@ abstract class EntityRepository extends RelationLoader
                 $verifyRow = $verify->fetch();
             } catch (\Exception $ex) { /* ignore */
             }
-        } elseif ($id > 0) {
+        } elseif ($id) {
             try {
                 $v = (clone $this->qb);
                 $verifyRow = $v->select(['id'])->from($this->table)->where('id', '=', $id)->fetch();
@@ -540,68 +594,20 @@ abstract class EntityRepository extends RelationLoader
             }
         }
 
-        if (!$verifyRow && $id <= 0) {
+        if (!$verifyRow && !$id) {
             throw new \RuntimeException("INSERT appeared to succeed but row not visible on same connection.");
         }
+
+        $finalId = $verifyRow->id ?? $id;
 
         if (property_exists($entity, 'id')) {
             $ref = new \ReflectionProperty($entity, 'id');
             $ref->setAccessible(true);
-            $ref->setValue($entity, (int)($verifyRow->id ?? $id));
+            $ref->setValue($entity, $finalId);
         }
 
         $this->storeOriginalValues($entity);
-
-        // ✅ Auto-sync ManyToMany collection changes after successful save
-        $this->syncCollections($entity);
-
-        return (int)($verifyRow->id ?? $id);
-    }
-
-    public function delete(int|string|object $idOrEntity): int
-    {
-        // Extract ID from entity or use provided ID
-        if (is_object($idOrEntity)) {
-            if (!property_exists($idOrEntity, 'id')) {
-                throw new InvalidArgumentException('Entity has no id property');
-            }
-            $rp = new ReflectionProperty($idOrEntity, 'id');
-            $rp->setAccessible(true);
-            $id = (int) $rp->getValue($idOrEntity);
-
-            // Clean up stored original values
-            unset($this->originalValues[spl_object_id($idOrEntity)]);
-
-            // ✅ Clear any pending collection changes (don't sync them)
-            $oid = spl_object_id($idOrEntity);
-            unset($this->originalCollections[$oid]);
-        } else {
-            $id = $idOrEntity;
-        }
-
-        if ($id <= 0) {
-            throw new InvalidArgumentException('Invalid ID for deletion');
-        }
-
-        // Check if entity exists before deletion
-        $existing = $this->find($id, false);
-        if (!$existing) {
-            return 0;
-        }
-
-        try {
-            // ① wipe / null related rows first (already handles ManyToMany cleanup)
-            $this->cascadeDeleteRelations((string)$id);
-
-            // ② hard-delete the entity with plain PDO
-            $pdo = $this->qb->pdo();
-            $sql = "DELETE FROM `{$this->table}` WHERE `id` = ? LIMIT 1";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([$id]);
-            return $stmt->rowCount();
-        } catch (\Throwable $e) {
-            throw $e;
-        }
+        return $finalId;
     }
 
     /**
@@ -623,6 +629,54 @@ abstract class EntityRepository extends RelationLoader
         $row = $qb->fetch();
         if (!$row) return 0;
         return (int) ($row->count ?? 0);
+    }
+
+    /**
+     * Delete entity by primary key.
+     *
+     * @param int|object $idOrEntity The primary key of the entity to delete or entity instance.
+     * @return int The number of affected rows (should be 1 for successful delete).
+     */
+    public function delete(int|string|object $idOrEntity): int
+    {
+        // Extract ID from entity or use provided ID
+        if (is_object($idOrEntity)) {
+            if (!property_exists($idOrEntity, 'id')) {
+                throw new InvalidArgumentException('Entity has no id property');
+            }
+            $rp = new ReflectionProperty($idOrEntity, 'id');
+            $rp->setAccessible(true);
+            $id = (string) $rp->getValue($idOrEntity);
+
+            // Clean up stored original values
+            unset($this->originalValues[spl_object_id($idOrEntity)]);
+        } else {
+            $id = $idOrEntity;
+        }
+
+        if ($id <= 0) {
+            throw new InvalidArgumentException('Invalid ID for deletion');
+        }
+
+        // Check if entity exists before deletion
+        $existing = $this->find($id, false); // Don't load relations for performance
+        if (!$existing) {
+            return 0;
+        }
+
+        try {
+            // ① wipe / null related rows first
+            $this->cascadeDeleteRelations($id);
+
+            // ② hard-delete the entity with plain PDO
+            $pdo = $this->qb->pdo();
+            $sql = "DELETE FROM `{$this->table}` WHERE `id` = ? LIMIT 1";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$id]);
+            return $stmt->rowCount();
+        } catch (\Throwable $e) {
+            throw $e;
+        }
     }
 
     /**
@@ -776,145 +830,5 @@ abstract class EntityRepository extends RelationLoader
             ->where($ownCol, '=', $ownId)
             ->andWhere($invCol, '=', $value)
             ->execute();
-    }
-
-    /**
-     * Store original collection values for change detection
-     *
-     * @param object $entity The entity instance
-     *
-     */
-    private function storeOriginalCollections(object $entity): void
-    {
-        $oid = spl_object_id($entity);
-        $this->originalCollections[$oid] = [];
-
-        $ref = new \ReflectionClass($entity);
-        foreach ($ref->getProperties() as $prop) {
-            // Check if property has ManyToMany attribute
-            $attrs = $prop->getAttributes(ManyToMany::class);
-            if (!$attrs) continue;
-
-            $prop->setAccessible(true);
-            if (!$prop->isInitialized($entity)) continue;
-
-            $value = $prop->getValue($entity);
-            if (!is_array($value)) continue;
-
-            // Store IDs of related entities
-            $ids = [];
-            foreach ($value as $relatedEntity) {
-                if (is_object($relatedEntity) && property_exists($relatedEntity, 'id')) {
-                    $idProp = new \ReflectionProperty($relatedEntity, 'id');
-                    $idProp->setAccessible(true);
-                    if ($idProp->isInitialized($relatedEntity)) {
-                        $ids[] = (int)$idProp->getValue($relatedEntity);
-                    }
-                }
-            }
-
-            $this->originalCollections[$oid][$prop->getName()] = $ids;
-        }
-    }
-
-    /**
-     * Detect collection changes by comparing current state with original
-     *
-     * @param object $entity The entity instance
-     * @return array
-     *
-     */
-    private function detectCollectionChanges(object $entity): array
-    {
-        $oid = spl_object_id($entity);
-
-        if (!isset($this->originalCollections[$oid])) {
-            return ['added' => [], 'removed' => []];
-        }
-
-        $changes = ['added' => [], 'removed' => []];
-        $original = $this->originalCollections[$oid];
-
-        $ref = new \ReflectionClass($entity);
-        foreach ($ref->getProperties() as $prop) {
-            $attrs = $prop->getAttributes(ManyToMany::class);
-            if (!$attrs) continue;
-
-            $propName = $prop->getName();
-            $prop->setAccessible(true);
-
-            if (!$prop->isInitialized($entity)) continue;
-
-            $currentValue = $prop->getValue($entity);
-            if (!is_array($currentValue)) continue;
-
-            // Get current IDs
-            $currentIds = [];
-            foreach ($currentValue as $relatedEntity) {
-                if (is_object($relatedEntity) && property_exists($relatedEntity, 'id')) {
-                    $idProp = new \ReflectionProperty($relatedEntity, 'id');
-                    $idProp->setAccessible(true);
-                    if ($idProp->isInitialized($relatedEntity)) {
-                        $currentIds[] = (int)$idProp->getValue($relatedEntity);
-                    }
-                }
-            }
-
-            $originalIds = $original[$propName] ?? [];
-
-            // Detect additions
-            $added = array_diff($currentIds, $originalIds);
-            if (!empty($added)) {
-                $changes['added'][$propName] = array_values($added);
-            }
-
-            // Detect removals
-            $removed = array_diff($originalIds, $currentIds);
-            if (!empty($removed)) {
-                $changes['removed'][$propName] = array_values($removed);
-            }
-        }
-
-        return $changes;
-    }
-
-    /**
-     * Persist ManyToMany collection changes to database
-     *
-     * @param object $entity The entity instance
-     * @return int Total number of affected rows
-     * @throws \ReflectionException
-     */
-    public function syncCollections(object $entity): int
-    {
-        // Detect what changed
-        $changes = $this->detectCollectionChanges($entity);
-        $totalAffected = 0;
-
-        // Process additions
-        foreach ($changes['added'] as $property => $ids) {
-            foreach ($ids as $id) {
-                try {
-                    $totalAffected += $this->attachRelation($entity, $property, $id);
-                } catch (\PDOException $e) {
-                    // Ignore duplicate key errors (1062)
-                    if (isset($e->errorInfo[1]) && (int)$e->errorInfo[1] !== 1062) {
-                        throw $e;
-                    }
-                }
-            }
-        }
-
-        // Process removals
-        foreach ($changes['removed'] as $property => $ids) {
-            foreach ($ids as $id) {
-                $totalAffected += $this->detachRelation($entity, $property, $id);
-            }
-        }
-
-        // Update stored collections to reflect new state
-        $this->storeOriginalCollections($entity);
-
-        return $totalAffected;
     }
 }
