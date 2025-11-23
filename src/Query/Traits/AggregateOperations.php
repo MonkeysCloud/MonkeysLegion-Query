@@ -150,4 +150,238 @@ trait AggregateOperations
 
         return $result !== false;
     }
+
+    /**
+     * Checks if no rows exist (opposite of exists).
+     */
+    public function doesntExist(): bool
+    {
+        return !$this->exists();
+    }
+
+    /**
+     * Gets a count of distinct values.
+     */
+    public function countDistinct(string $column): int
+    {
+        $qb = $this->duplicate();
+
+        try {
+            $qb->preflightResolveTables();
+        } catch (\Throwable $e) {
+            error_log("[qb.countDistinct] preflightResolveTables FAILED: {$e->getMessage()}");
+            throw $e;
+        }
+
+        $qb->parts['select'] = "COUNT(DISTINCT $column) AS cnt";
+        $qb->parts['orderBy'] = [];
+        $qb->parts['limit'] = null;
+        $qb->parts['offset'] = null;
+
+        try {
+            $sql = $qb->toSql();
+            $stmt = $this->conn->pdo()->prepare($sql);
+
+            if (!$stmt->execute($qb->params)) {
+                [$state, $code, $msg] = $stmt->errorInfo();
+                throw new \RuntimeException("Count distinct query failed: $state/$code – $msg");
+            }
+
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return (int)($row['cnt'] ?? 0);
+        } catch (\PDOException $e) {
+            error_log("[qb.countDistinct] PDOException: {$e->getMessage()}");
+            throw $e;
+        }
+    }
+
+    /**
+     * Gets the sum of distinct values.
+     */
+    public function sumDistinct(string $column): float
+    {
+        return $this->aggregate('SUM', "DISTINCT $column");
+    }
+
+    /**
+     * Gets the average of distinct values.
+     */
+    public function avgDistinct(string $column): float
+    {
+        return $this->aggregate('AVG', "DISTINCT $column");
+    }
+
+    /**
+     * Gets the standard deviation of a column.
+     */
+    public function stdDev(string $column): float
+    {
+        return $this->aggregate('STDDEV', $column);
+    }
+
+    /**
+     * Gets the population standard deviation of a column.
+     */
+    public function stdDevPop(string $column): float
+    {
+        return $this->aggregate('STDDEV_POP', $column);
+    }
+
+    /**
+     * Gets the sample standard deviation of a column.
+     */
+    public function stdDevSamp(string $column): float
+    {
+        return $this->aggregate('STDDEV_SAMP', $column);
+    }
+
+    /**
+     * Gets the variance of a column.
+     */
+    public function variance(string $column): float
+    {
+        return $this->aggregate('VARIANCE', $column);
+    }
+
+    /**
+     * Gets the population variance of a column.
+     */
+    public function varPop(string $column): float
+    {
+        return $this->aggregate('VAR_POP', $column);
+    }
+
+    /**
+     * Gets the sample variance of a column.
+     */
+    public function varSamp(string $column): float
+    {
+        return $this->aggregate('VAR_SAMP', $column);
+    }
+
+    /**
+     * Gets a GROUP_CONCAT result (MySQL specific).
+     *
+     * @param string $column Column to concatenate
+     * @param string $separator Separator between values (default: ',')
+     * @param bool $distinct Whether to use DISTINCT
+     */
+    public function groupConcat(string $column, string $separator = ',', bool $distinct = false): ?string
+    {
+        $qb = $this->duplicate();
+
+        try {
+            $qb->preflightResolveTables();
+        } catch (\Throwable $e) {
+            error_log("[qb.groupConcat] preflightResolveTables FAILED: {$e->getMessage()}");
+            throw $e;
+        }
+
+        $distinctKeyword = $distinct ? 'DISTINCT ' : '';
+        $sepPlaceholder = $qb->addParam($separator);
+
+        $qb->parts['select'] = "GROUP_CONCAT({$distinctKeyword}{$column} SEPARATOR {$sepPlaceholder}) AS result";
+        $qb->parts['orderBy'] = [];
+        $qb->parts['limit'] = null;
+        $qb->parts['offset'] = null;
+
+        try {
+            $sql = $qb->toSql();
+            $stmt = $this->conn->pdo()->prepare($sql);
+
+            if (!$stmt->execute($qb->params)) {
+                [$state, $code, $msg] = $stmt->errorInfo();
+                throw new \RuntimeException("Group concat query failed: $state/$code – $msg");
+            }
+
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row['result'] ?? null;
+        } catch (\PDOException $e) {
+            error_log("[qb.groupConcat] PDOException: {$e->getMessage()}");
+            throw $e;
+        }
+    }
+
+    /**
+     * Executes a custom aggregate function.
+     *
+     * @param string $function The aggregate function (e.g., 'COUNT', 'SUM', 'CUSTOM_FUNC')
+     * @param string $expression The column or expression to aggregate
+     * @return mixed
+     * @throws \Throwable
+     */
+    public function aggregateCustom(string $function, string $expression = '*'): mixed
+    {
+        return $this->aggregateRaw($function, $expression);
+    }
+
+    /**
+     * Increments a column's value by a given amount (useful with aggregate).
+     * Returns the new aggregated value.
+     */
+    public function increment(string $column, int|float $amount = 1): float
+    {
+        return $this->sum($column) + $amount;
+    }
+
+    /**
+     * Decrements a column's value by a given amount (useful with aggregate).
+     * Returns the new aggregated value.
+     */
+    public function decrement(string $column, int|float $amount = 1): float
+    {
+        return $this->sum($column) - $amount;
+    }
+
+    /**
+     * Counts rows where a condition is true (MySQL).
+     *
+     * Example: countWhere('status', '=', 'active')
+     * Results in: COUNT(CASE WHEN status = ? THEN 1 END)
+     */
+    public function countWhere(string $column, string $operator, mixed $value): int
+    {
+        $placeholder = $this->addParam($value);
+        $expression = "CASE WHEN $column $operator $placeholder THEN 1 END";
+
+        $qb = $this->duplicate();
+
+        try {
+            $qb->preflightResolveTables();
+        } catch (\Throwable $e) {
+            error_log("[qb.countWhere] preflightResolveTables FAILED: {$e->getMessage()}");
+            throw $e;
+        }
+
+        $qb->parts['select'] = "COUNT($expression) AS cnt";
+        $qb->parts['orderBy'] = [];
+        $qb->parts['limit'] = null;
+        $qb->parts['offset'] = null;
+
+        try {
+            $sql = $qb->toSql();
+            $stmt = $this->conn->pdo()->prepare($sql);
+
+            if (!$stmt->execute($qb->params)) {
+                [$state, $code, $msg] = $stmt->errorInfo();
+                throw new \RuntimeException("Conditional count query failed: $state/$code – $msg");
+            }
+
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return (int)($row['cnt'] ?? 0);
+        } catch (\PDOException $e) {
+            error_log("[qb.countWhere] PDOException: {$e->getMessage()}");
+            throw $e;
+        }
+    }
+
+    /**
+     * Sums values where a condition is true.
+     */
+    public function sumWhere(string $column, string $whereColumn, string $operator, mixed $value): float
+    {
+        $placeholder = $this->addParam($value);
+        $expression = "CASE WHEN $whereColumn $operator $placeholder THEN $column ELSE 0 END";
+        return $this->aggregate('SUM', $expression);
+    }
 }

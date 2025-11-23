@@ -85,15 +85,6 @@ trait OrderGroupOperations
     }
 
     /**
-     * Sets pagination (convenience method).
-     */
-    public function paginate(int $page, int $perPage = 15): self
-    {
-        $page = max(1, $page);
-        return $this->limit($perPage)->offset(($page - 1) * $perPage);
-    }
-
-    /**
      * Adds a UNION clause.
      */
     public function union(string $sql, array $params = [], bool $all = false): self

@@ -30,35 +30,69 @@ trait DmlOperations
 
     /**
      * Inserts a new row into the specified table.
+     *
+     * @param string $table The table name.
+     * @param array<string, mixed> $data The data to insert, as an associative array.
+     *
+     * @return int|string The ID of the inserted row (int for auto-increment, string for UUID).
+     *
+     * @throws \InvalidArgumentException If $data is empty.
+     * @throws \RuntimeException If the insert fails.
+     * @throws \PDOException If PDO throws during prepare/execute.
      */
-    public function insert(string $table, array $data): int | string
+    public function insert(string $table, array $data): int|string
     {
-        if (empty($data)) {
+        if ($data === []) {
             throw new \InvalidArgumentException("Cannot insert empty data");
         }
 
-        $cols = implode(', ', array_keys($data));
-        $phs = implode(', ', array_map(fn(string $k) => ":$k", array_keys($data)));
-        $sql = "INSERT INTO $table ($cols) VALUES ($phs)";
+        $columns = array_keys($data);
+
+        // Build "col1, col2, col3"
+        $cols = implode(', ', $columns);
+
+        // Build ":col1, :col2, :col3"
+        $placeholders = implode(
+            ', ',
+            array_map(fn (string $k) => ':' . $k, $columns)
+        );
+
+        $sql = "INSERT INTO {$table} ({$cols}) VALUES ({$placeholders})";
 
         $stmt = $this->conn->pdo()->prepare($sql);
+
+        // Map ":col" => value
         $bound = array_combine(
-            array_map(fn(string $k) => ":$k", array_keys($data)),
+            array_map(fn (string $k) => ':' . $k, $columns),
             $data
         );
 
-        if (!$stmt->execute($bound)) {
-            [$state, $code, $msg] = $stmt->errorInfo();
-            throw new \RuntimeException("Insert failed: $state/$code – $msg");
+        if ($bound === false) {
+            throw new \RuntimeException('Failed to build parameter bindings for insert()');
         }
 
-        $id = $this->conn->pdo()->lastInsertId();
-        $this->reset();
-        if (Uuid::isValid($id)) {
-            return (string) $id;
-        } else {
-            return (int) $id;
+        if (!$stmt->execute($bound)) {
+            [$state, $code, $msg] = $stmt->errorInfo();
+            throw new \RuntimeException("Insert failed: {$state}/{$code} – {$msg}");
         }
+
+        // Let PDO/driver decide the type; we normalize to int|string.
+        $id = $this->conn->pdo()->lastInsertId();
+
+        $this->reset();
+
+        if ($id === '' || $id === '0') {
+            // No meaningful lastInsertId (e.g. no PK / some drivers)
+            // You *could* return 0 or throw; for now, return 0 as int.
+            return 0;
+        }
+
+        // If it's a valid UUID, return as string; otherwise cast to int.
+        if (Uuid::isValid($id)) {
+            return $id;
+        }
+
+        return (int) $id;
     }
 
     /**

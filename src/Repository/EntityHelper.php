@@ -47,6 +47,7 @@ abstract class EntityHelper
 
     /**
      * Store original values for change detection
+     * @throws \ReflectionException
      */
     protected function storeOriginalValues(object $entity): void
     {
@@ -72,6 +73,7 @@ abstract class EntityHelper
 
     /**
      * Get only changed fields for an entity
+     * @throws \ReflectionException
      */
     protected function getChangedFields(object $entity): array
     {
@@ -301,6 +303,7 @@ abstract class EntityHelper
      * Internal helper to read #[ManyToMany(..., joinTable: new JoinTable(...))] metadata.
      *
      * @param string $relationProp
+     * @param object|null $entity
      * @return array{0:string,1:string,2:string}  [ join_table, join_column, inverse_column ]
      * @throws \ReflectionException
      */

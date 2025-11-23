@@ -364,4 +364,314 @@ trait WhereOperations
         ];
         return $this;
     }
+
+    /**
+     * Adds a WHERE NOT LIKE condition.
+     */
+    public function whereNotLike(string $column, string $pattern): self
+    {
+        $placeholder = $this->addParam($pattern);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "$column NOT LIKE $placeholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE NOT LIKE condition.
+     */
+    public function orWhereNotLike(string $column, string $pattern): self
+    {
+        $placeholder = $this->addParam($pattern);
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "$column NOT LIKE $placeholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE NOT BETWEEN condition.
+     */
+    public function whereNotBetween(string $column, mixed $min, mixed $max): self
+    {
+        $minPlaceholder = $this->addParam($min);
+        $maxPlaceholder = $this->addParam($max);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "$column NOT BETWEEN $minPlaceholder AND $maxPlaceholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE IN condition.
+     */
+    public function orWhereIn(string $column, array $values): self
+    {
+        if (empty($values)) {
+            $this->parts['where'][] = ['type' => 'OR', 'expr' => '1=0'];
+            return $this;
+        }
+
+        $placeholders = array_map(fn($v) => $this->addParam($v), $values);
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "$column IN (" . implode(', ', $placeholders) . ")",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE NOT IN condition.
+     */
+    public function orWhereNotIn(string $column, array $values): self
+    {
+        if (empty($values)) {
+            return $this;
+        }
+
+        $placeholders = array_map(fn($v) => $this->addParam($v), $values);
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "$column NOT IN (" . implode(', ', $placeholders) . ")",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE BETWEEN condition.
+     */
+    public function orWhereBetween(string $column, mixed $min, mixed $max): self
+    {
+        $minPlaceholder = $this->addParam($min);
+        $maxPlaceholder = $this->addParam($max);
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "$column BETWEEN $minPlaceholder AND $maxPlaceholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE NOT BETWEEN condition.
+     */
+    public function orWhereNotBetween(string $column, mixed $min, mixed $max): self
+    {
+        $minPlaceholder = $this->addParam($min);
+        $maxPlaceholder = $this->addParam($max);
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "$column NOT BETWEEN $minPlaceholder AND $maxPlaceholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE EXISTS condition.
+     */
+    public function orWhereExists(string $subquery, array $params = []): self
+    {
+        foreach ($params as $value) {
+            $placeholder = $this->addParam($value);
+            $subquery = preg_replace('/\?/', $placeholder, $subquery, 1);
+        }
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "EXISTS ($subquery)",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE NOT EXISTS condition.
+     */
+    public function orWhereNotExists(string $subquery, array $params = []): self
+    {
+        foreach ($params as $value) {
+            $placeholder = $this->addParam($value);
+            $subquery = preg_replace('/\?/', $placeholder, $subquery, 1);
+        }
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "NOT EXISTS ($subquery)",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE condition comparing two columns.
+     */
+    public function whereColumn(string $column1, string $operator, string $column2): self
+    {
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "$column1 $operator $column2",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds an OR WHERE condition comparing two columns.
+     */
+    public function orWhereColumn(string $column1, string $operator, string $column2): self
+    {
+        $this->parts['where'][] = [
+            'type' => 'OR',
+            'expr' => "$column1 $operator $column2",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE DATE() condition.
+     */
+    public function whereDate(string $column, string $operator, string $date): self
+    {
+        $placeholder = $this->addParam($date);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "DATE($column) $operator $placeholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE YEAR() condition.
+     */
+    public function whereYear(string $column, string $operator, int $year): self
+    {
+        $placeholder = $this->addParam($year);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "YEAR($column) $operator $placeholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE MONTH() condition.
+     */
+    public function whereMonth(string $column, string $operator, int $month): self
+    {
+        $placeholder = $this->addParam($month);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "MONTH($column) $operator $placeholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE DAY() condition.
+     */
+    public function whereDay(string $column, string $operator, int $day): self
+    {
+        $placeholder = $this->addParam($day);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "DAY($column) $operator $placeholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE TIME() condition.
+     */
+    public function whereTime(string $column, string $operator, string $time): self
+    {
+        $placeholder = $this->addParam($time);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "TIME($column) $operator $placeholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE JSON_CONTAINS() condition.
+     */
+    public function whereJsonContains(string $column, string $path, mixed $value): self
+    {
+        $placeholder = $this->addParam(json_encode($value));
+        $pathPlaceholder = $this->addParam($path);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "JSON_CONTAINS($column, $placeholder, $pathPlaceholder)",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE JSON_LENGTH() condition.
+     */
+    public function whereJsonLength(string $column, string $operator, int $length, ?string $path = null): self
+    {
+        $placeholder = $this->addParam($length);
+        $expr = $path
+            ? "JSON_LENGTH($column, " . $this->addParam($path) . ") $operator $placeholder"
+            : "JSON_LENGTH($column) $operator $placeholder";
+
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => $expr,
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a WHERE condition for JSON path extraction.
+     */
+    public function whereJsonExtract(string $column, string $path, string $operator, mixed $value): self
+    {
+        $pathPlaceholder = $this->addParam($path);
+        $valuePlaceholder = $this->addParam($value);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "JSON_EXTRACT($column, $pathPlaceholder) $operator $valuePlaceholder",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a MATCH() AGAINST() full-text search condition.
+     */
+    public function whereFullText(string|array $columns, string $search, string $mode = 'NATURAL LANGUAGE'): self
+    {
+        $cols = is_array($columns) ? implode(', ', $columns) : $columns;
+        $placeholder = $this->addParam($search);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "MATCH($cols) AGAINST($placeholder IN $mode MODE)",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a bitwise AND condition.
+     */
+    public function whereBitwise(string $column, int $value, string $operator = '&'): self
+    {
+        $placeholder = $this->addParam($value);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "($column $operator $placeholder) > 0",
+        ];
+        return $this;
+    }
+
+    /**
+     * Adds a FIND_IN_SET() condition.
+     */
+    public function whereFindInSet(string $value, string $column): self
+    {
+        $placeholder = $this->addParam($value);
+        $this->parts['where'][] = [
+            'type' => empty($this->parts['where']) ? '' : 'AND',
+            'expr' => "FIND_IN_SET($placeholder, $column) > 0",
+        ];
+        return $this;
+    }
+
 }
