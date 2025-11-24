@@ -12,7 +12,6 @@ use MonkeysLegion\Query\Traits\FetchOperations;
 use MonkeysLegion\Query\Traits\JoinOperations;
 use MonkeysLegion\Query\Traits\OrderGroupOperations;
 use MonkeysLegion\Query\Traits\SelectOperations;
-use MonkeysLegion\Query\Traits\TableOperations;
 use MonkeysLegion\Query\Traits\TransactionOperations;
 use MonkeysLegion\Query\Traits\WhereOperations;
 
@@ -31,7 +30,6 @@ final class QueryBuilder extends AbstractQueryBuilder
     use FetchOperations;
     use AggregateOperations;
     use TransactionOperations;
-    use TableOperations;
 
     /**
      * Constructor.

@@ -6,10 +6,12 @@ namespace MonkeysLegion\Query;
 
 use MonkeysLegion\Database\Contracts\ConnectionInterface;
 use MonkeysLegion\Query\Traits\Identifier;
+use MonkeysLegion\Query\Traits\TableOperations;
 use PDO;
 
 abstract class AbstractQueryBuilder
 {
+    use TableOperations;
     use Identifier;
 
     /** @var array<string,mixed> */
@@ -368,33 +370,6 @@ abstract class AbstractQueryBuilder
         }
 
         return $table;
-    }
-
-    protected function tableExists(string $table, ?string $schema = null): bool
-    {
-        try {
-            $driver = $this->pdo()->getAttribute(PDO::ATTR_DRIVER_NAME);
-
-            if ($driver === 'sqlite') {
-                $sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = :t";
-                $stmt = $this->conn->pdo()->prepare($sql);
-                $stmt->execute([':t' => $table]);
-                return (bool) $stmt->fetchColumn();
-            }
-
-            // MySQL / MariaDB
-            $sql = "SELECT 1
-              FROM information_schema.tables
-             WHERE table_name = :t
-               AND table_schema = COALESCE(:s, DATABASE())
-             LIMIT 1";
-            $stmt = $this->conn->pdo()->prepare($sql);
-            $stmt->execute([':t' => $table, ':s' => $schema]);
-            return (bool) $stmt->fetchColumn();
-        } catch (\Throwable $e) {
-            error_log("[qb.exists] Throwable for '" . ($schema ? "$schema.$table" : $table) . "': " . $e->getMessage());
-            return false;
-        }
     }
 
     /**

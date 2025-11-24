@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace MonkeysLegion\Query\Traits;
 
 use MonkeysLegion\Database\Contracts\ConnectionInterface;
+use PDO;
 
 /**
  * Provides table management operations for the query builder.
@@ -334,41 +335,29 @@ trait TableOperations
     /**
      * Checks if a table exists in the database.
      */
-    public function tableExists(string $table): bool
+    public function tableExists(string $table, ?string $schema = null): bool
     {
-        $table = $this->resolveTable($table);
-        $table = $this->withPrefix($table);
-
         try {
-            $pdo = $this->conn->pdo();
-            $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            $driver = $this->pdo()->getAttribute(PDO::ATTR_DRIVER_NAME);
 
-            if ($driver === 'mysql') {
-                $stmt = $pdo->prepare("SHOW TABLES LIKE ?");
-                $stmt->execute([$table]);
-                return $stmt->rowCount() > 0;
-            } elseif ($driver === 'pgsql') {
-                $stmt = $pdo->prepare(
-                    "SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = ?
-                )"
-                );
-                $stmt->execute([$table]);
-                $result = $stmt->fetch(\PDO::FETCH_COLUMN);
-                return (bool)$result;
-            } elseif ($driver === 'sqlite') {
-                $stmt = $pdo->prepare(
-                    "SELECT name FROM sqlite_master 
-                WHERE type='table' AND name=?"
-                );
-                $stmt->execute([$table]);
-                return $stmt->rowCount() > 0;
+            if ($driver === 'sqlite') {
+                $sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = :t";
+                $stmt = $this->conn->pdo()->prepare($sql);
+                $stmt->execute([':t' => $table]);
+                return (bool) $stmt->fetchColumn();
             }
 
-            return false;
-        } catch (\PDOException $e) {
-            error_log("[qb.tableExists] Error checking table: {$e->getMessage()}");
+            // MySQL / MariaDB
+            $sql = "SELECT 1
+              FROM information_schema.tables
+             WHERE table_name = :t
+               AND table_schema = COALESCE(:s, DATABASE())
+             LIMIT 1";
+            $stmt = $this->conn->pdo()->prepare($sql);
+            $stmt->execute([':t' => $table, ':s' => $schema]);
+            return (bool) $stmt->fetchColumn();
+        } catch (\Throwable $e) {
+            error_log("[qb.exists] Throwable for '" . ($schema ? "$schema.$table" : $table) . "': " . $e->getMessage());
             return false;
         }
     }
