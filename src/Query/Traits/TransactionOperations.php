@@ -43,7 +43,7 @@ trait TransactionOperations
     /**
      * Starts a database transaction.
      */
-    public function beginTransaction(): self
+    public function beginTransaction(): static
     {
         if (!$this->inTransaction) {
             $this->conn->pdo()->beginTransaction();
@@ -55,7 +55,7 @@ trait TransactionOperations
     /**
      * Commits the current transaction.
      */
-    public function commit(): self
+    public function commit(): static
     {
         if ($this->inTransaction) {
             $this->conn->pdo()->commit();
@@ -67,7 +67,7 @@ trait TransactionOperations
     /**
      * Rolls back the current transaction.
      */
-    public function rollback(): self
+    public function rollback(): static
     {
         if ($this->inTransaction) {
             $this->conn->pdo()->rollBack();
@@ -96,7 +96,7 @@ trait TransactionOperations
     /**
      * Starts a transaction or creates a savepoint for nested transactions.
      */
-    public function beginTransactionNested(): self
+    public function beginTransactionNested(): static
     {
         $this->transactionLevel++;
 
@@ -115,7 +115,7 @@ trait TransactionOperations
     /**
      * Commits a transaction or releases a savepoint.
      */
-    public function commitNested(): self
+    public function commitNested(): static
     {
         if ($this->transactionLevel === 0) {
             throw new \RuntimeException("No active transaction to commit");
@@ -137,7 +137,7 @@ trait TransactionOperations
     /**
      * Rolls back a transaction or rolls back to a savepoint.
      */
-    public function rollbackNested(): self
+    public function rollbackNested(): static
     {
         if ($this->transactionLevel === 0) {
             throw new \RuntimeException("No active transaction to rollback");
@@ -159,7 +159,7 @@ trait TransactionOperations
     /**
      * Creates a savepoint manually.
      */
-    public function savepoint(string $name): self
+    public function savepoint(string $name): static
     {
         if (!$this->inTransaction) {
             throw new \RuntimeException("Cannot create savepoint outside transaction");
@@ -172,7 +172,7 @@ trait TransactionOperations
     /**
      * Rolls back to a specific savepoint.
      */
-    public function rollbackToSavepoint(string $name): self
+    public function rollbackToSavepoint(string $name): static
     {
         if (!$this->inTransaction) {
             throw new \RuntimeException("Cannot rollback to savepoint outside transaction");
@@ -185,7 +185,7 @@ trait TransactionOperations
     /**
      * Releases a savepoint.
      */
-    public function releaseSavepoint(string $name): self
+    public function releaseSavepoint(string $name): static
     {
         if (!$this->inTransaction) {
             throw new \RuntimeException("Cannot release savepoint outside transaction");
@@ -224,7 +224,7 @@ trait TransactionOperations
      *
      * @param string $level One of: READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ, SERIALIZABLE
      */
-    public function setTransactionIsolation(string $level): self
+    public function setTransactionIsolation(string $level): static
     {
         $validLevels = [
             'READ UNCOMMITTED',
@@ -283,7 +283,7 @@ trait TransactionOperations
     /**
      * Sets READ UNCOMMITTED isolation level.
      */
-    public function readUncommitted(): self
+    public function readUncommitted(): static
     {
         return $this->setTransactionIsolation('READ UNCOMMITTED');
     }
@@ -291,7 +291,7 @@ trait TransactionOperations
     /**
      * Sets READ COMMITTED isolation level.
      */
-    public function readCommitted(): self
+    public function readCommitted(): static
     {
         return $this->setTransactionIsolation('READ COMMITTED');
     }
@@ -299,7 +299,7 @@ trait TransactionOperations
     /**
      * Sets REPEATABLE READ isolation level.
      */
-    public function repeatableRead(): self
+    public function repeatableRead(): static
     {
         return $this->setTransactionIsolation('REPEATABLE READ');
     }
@@ -307,7 +307,7 @@ trait TransactionOperations
     /**
      * Sets SERIALIZABLE isolation level.
      */
-    public function serializable(): self
+    public function serializable(): static
     {
         return $this->setTransactionIsolation('SERIALIZABLE');
     }
@@ -403,7 +403,7 @@ trait TransactionOperations
     /**
      * Registers a callback to execute after successful commit.
      */
-    public function afterCommit(callable $callback): self
+    public function afterCommit(callable $callback): static
     {
         $this->afterCommitCallbacks[] = $callback;
         return $this;
@@ -412,7 +412,7 @@ trait TransactionOperations
     /**
      * Registers a callback to execute after rollback.
      */
-    public function afterRollback(callable $callback): self
+    public function afterRollback(callable $callback): static
     {
         $this->afterRollbackCallbacks[] = $callback;
         return $this;
@@ -421,7 +421,7 @@ trait TransactionOperations
     /**
      * Commits the transaction and executes after-commit callbacks.
      */
-    public function commitWithCallbacks(): self
+    public function commitWithCallbacks(): static
     {
         if ($this->inTransaction) {
             $this->conn->pdo()->commit();
@@ -446,7 +446,7 @@ trait TransactionOperations
     /**
      * Rolls back the transaction and executes after-rollback callbacks.
      */
-    public function rollbackWithCallbacks(): self
+    public function rollbackWithCallbacks(): static
     {
         if ($this->inTransaction) {
             $this->conn->pdo()->rollBack();
@@ -471,7 +471,7 @@ trait TransactionOperations
     /**
      * Clears all registered callbacks.
      */
-    public function clearCallbacks(): self
+    public function clearCallbacks(): static
     {
         $this->afterCommitCallbacks = [];
         $this->afterRollbackCallbacks = [];
@@ -481,7 +481,7 @@ trait TransactionOperations
     /**
      * Sets constraints to be deferred until transaction commit (PostgreSQL).
      */
-    public function deferConstraints(): self
+    public function deferConstraints(): static
     {
         $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
@@ -501,7 +501,7 @@ trait TransactionOperations
     /**
      * Sets constraints to be checked immediately (PostgreSQL).
      */
-    public function immediateConstraints(): self
+    public function immediateConstraints(): static
     {
         $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
@@ -633,7 +633,7 @@ trait TransactionOperations
     /**
      * Resets transaction statistics.
      */
-    public function resetTransactionStats(): self
+    public function resetTransactionStats(): static
     {
         $this->transactionStats = [
             'commits' => 0,
@@ -646,7 +646,7 @@ trait TransactionOperations
     /**
      * Forces a rollback if currently in transaction (cleanup method).
      */
-    public function forceRollback(): self
+    public function forceRollback(): static
     {
         if ($this->inTransaction) {
             try {
@@ -663,7 +663,7 @@ trait TransactionOperations
     /**
      * Ensures no transaction is active (for cleanup).
      */
-    public function ensureNoTransaction(): self
+    public function ensureNoTransaction(): static
     {
         if ($this->isActiveTransaction()) {
             error_log("[TransactionOperations] Warning: Uncommitted transaction detected, forcing rollback");
@@ -675,7 +675,7 @@ trait TransactionOperations
     /**
      * Begins a transaction with a specific isolation level.
      */
-    public function beginTransactionWith(string $isolationLevel): self
+    public function beginTransactionWith(string $isolationLevel): static
     {
         $this->setTransactionIsolation($isolationLevel);
         return $this->beginTransaction();
@@ -684,7 +684,7 @@ trait TransactionOperations
     /**
      * Begins a read-only transaction (PostgreSQL/MySQL 5.6+).
      */
-    public function beginReadOnlyTransaction(): self
+    public function beginReadOnlyTransaction(): static
     {
         $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
@@ -705,7 +705,7 @@ trait TransactionOperations
     /**
      * Begins a read-write transaction (explicit).
      */
-    public function beginReadWriteTransaction(): self
+    public function beginReadWriteTransaction(): static
     {
         $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 

@@ -17,7 +17,7 @@ trait SelectOperations
     /**
      * Sets the SELECT columns.
      */
-    public function select(string|array $columns = ['*']): self
+    public function select(string|array $columns = ['*']): static
     {
         $this->parts['select'] = is_array($columns)
             ? implode(', ', $columns)
@@ -28,7 +28,7 @@ trait SelectOperations
     /**
      * Adds columns to existing SELECT.
      */
-    public function addSelect(string|array $columns): self
+    public function addSelect(string|array $columns): static
     {
         $existing = $this->parts['select'] === '*' ? [] : explode(', ', $this->parts['select']);
         $new = is_array($columns) ? $columns : [$columns];
@@ -39,7 +39,7 @@ trait SelectOperations
     /**
      * Adds DISTINCT to the SELECT statement.
      */
-    public function distinct(): self
+    public function distinct(): static
     {
         $this->parts['distinct'] = true;
         return $this;
@@ -48,7 +48,7 @@ trait SelectOperations
     /**
      * Sets the FROM clause.
      */
-    public function from(string $table, ?string $alias = null): self
+    public function from(string $table, ?string $alias = null): static
     {
         $this->parts['from'] = $alias ? "$table AS $alias" : $table;
         return $this;
@@ -60,7 +60,7 @@ trait SelectOperations
      * @param string $expression Raw SQL expression
      * @param array $bindings Parameter bindings for the expression
      */
-    public function selectRaw(string $expression, array $bindings = []): self
+    public function selectRaw(string $expression, array $bindings = []): static
     {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
@@ -74,7 +74,7 @@ trait SelectOperations
     /**
      * Adds a raw expression to existing SELECT.
      */
-    public function addSelectRaw(string $expression, array $bindings = []): self
+    public function addSelectRaw(string $expression, array $bindings = []): static
     {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
@@ -94,7 +94,7 @@ trait SelectOperations
      * @param string $alias Alias for the subquery result
      * @param array $bindings Parameter bindings
      */
-    public function selectSub(string $subquery, string $alias, array $bindings = []): self
+    public function selectSub(string $subquery, string $alias, array $bindings = []): static
     {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
@@ -118,9 +118,9 @@ trait SelectOperations
      * @param callable $callback Callback that receives a QueryBuilder instance
      * @param string $alias Alias for the subquery result
      */
-    public function selectSubQuery(callable $callback, string $alias): self
+    public function selectSubQuery(callable $callback, string $alias): static
     {
-        $subBuilder = new self($this->conn);
+        $subBuilder = new static($this->conn);
         $callback($subBuilder);
 
         $subquery = $subBuilder->toSql();
@@ -154,7 +154,7 @@ trait SelectOperations
      * @param string $column Column name or expression
      * @param string $alias Alias for the column
      */
-    public function selectAs(string $column, string $alias): self
+    public function selectAs(string $column, string $alias): static
     {
         $expression = "$column AS $alias";
 
@@ -173,7 +173,7 @@ trait SelectOperations
      * @param array $columns Associative array where key is column and value is alias
      * Example: ['user_id' => 'id', 'user_name' => 'name']
      */
-    public function selectAliases(array $columns): self
+    public function selectAliases(array $columns): static
     {
         $expressions = [];
         foreach ($columns as $column => $alias) {
@@ -193,7 +193,7 @@ trait SelectOperations
     /**
      * Adds a COUNT expression to SELECT.
      */
-    public function selectCount(string $column = '*', string $alias = 'count'): self
+    public function selectCount(string $column = '*', string $alias = 'count'): static
     {
         return $this->selectAs("COUNT($column)", $alias);
     }
@@ -201,7 +201,7 @@ trait SelectOperations
     /**
      * Adds a SUM expression to SELECT.
      */
-    public function selectSum(string $column, string $alias = 'total'): self
+    public function selectSum(string $column, string $alias = 'total'): static
     {
         return $this->selectAs("SUM($column)", $alias);
     }
@@ -209,7 +209,7 @@ trait SelectOperations
     /**
      * Adds an AVG expression to SELECT.
      */
-    public function selectAvg(string $column, string $alias = 'average'): self
+    public function selectAvg(string $column, string $alias = 'average'): static
     {
         return $this->selectAs("AVG($column)", $alias);
     }
@@ -217,7 +217,7 @@ trait SelectOperations
     /**
      * Adds a MIN expression to SELECT.
      */
-    public function selectMin(string $column, string $alias = 'minimum'): self
+    public function selectMin(string $column, string $alias = 'minimum'): static
     {
         return $this->selectAs("MIN($column)", $alias);
     }
@@ -225,7 +225,7 @@ trait SelectOperations
     /**
      * Adds a MAX expression to SELECT.
      */
-    public function selectMax(string $column, string $alias = 'maximum'): self
+    public function selectMax(string $column, string $alias = 'maximum'): static
     {
         return $this->selectAs("MAX($column)", $alias);
     }
@@ -237,7 +237,7 @@ trait SelectOperations
      * @param string $alias Alias for the result
      * @param string|null $separator Optional separator
      */
-    public function selectConcat(array $columns, string $alias, ?string $separator = null): self
+    public function selectConcat(array $columns, string $alias, ?string $separator = null): static
     {
         if ($separator !== null) {
             $placeholder = $this->addParam($separator);
@@ -252,7 +252,7 @@ trait SelectOperations
     /**
      * Adds a COALESCE expression to SELECT.
      */
-    public function selectCoalesce(array $columns, string $alias): self
+    public function selectCoalesce(array $columns, string $alias): static
     {
         $expression = 'COALESCE(' . implode(', ', $columns) . ')';
         return $this->selectAs($expression, $alias);
@@ -271,7 +271,7 @@ trait SelectOperations
      *     'status = "pending"' => '"Pending User"'
      * ], '"Unknown"', 'user_status')
      */
-    public function selectCase(array $conditions, mixed $else = null, string $alias = 'case_result'): self
+    public function selectCase(array $conditions, mixed $else = null, string $alias = 'case_result'): static
     {
         $caseExpr = 'CASE';
 
@@ -296,7 +296,7 @@ trait SelectOperations
      * @param mixed $else Default value
      * @param string $alias Result alias
      */
-    public function selectCaseWhen(string $column, array $whenThen, mixed $else = null, string $alias = 'case_result'): self
+    public function selectCaseWhen(string $column, array $whenThen, mixed $else = null, string $alias = 'case_result'): static
     {
         $caseExpr = "CASE $column";
 
@@ -319,7 +319,7 @@ trait SelectOperations
     /**
      * Adds a raw FROM clause.
      */
-    public function fromRaw(string $expression, array $bindings = []): self
+    public function fromRaw(string $expression, array $bindings = []): static
     {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
@@ -337,7 +337,7 @@ trait SelectOperations
      * @param string $alias Alias for the derived table
      * @param array $bindings Parameter bindings
      */
-    public function fromSub(string $subquery, string $alias, array $bindings = []): self
+    public function fromSub(string $subquery, string $alias, array $bindings = []): static
     {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
@@ -351,9 +351,9 @@ trait SelectOperations
     /**
      * Sets FROM to a subquery using QueryBuilder callback.
      */
-    public function fromSubQuery(callable $callback, string $alias): self
+    public function fromSubQuery(callable $callback, string $alias): static
     {
-        $subBuilder = new self($this->conn);
+        $subBuilder = new static($this->conn);
         $callback($subBuilder);
 
         $subquery = $subBuilder->toSql();
@@ -377,7 +377,7 @@ trait SelectOperations
      * Adds additional tables to FROM (comma-separated).
      * For Cartesian products or when you need multiple tables.
      */
-    public function addFrom(string $table, ?string $alias = null): self
+    public function addFrom(string $table, ?string $alias = null): static
     {
         $tableExpr = $alias ? "$table AS $alias" : $table;
 
@@ -396,7 +396,7 @@ trait SelectOperations
      *
      * @param string|array $columns Columns for DISTINCT ON
      */
-    public function distinctOn(string|array $columns): self
+    public function distinctOn(string|array $columns): static
     {
         $columnList = is_array($columns) ? implode(', ', $columns) : $columns;
 
@@ -416,7 +416,7 @@ trait SelectOperations
     /**
      * Removes DISTINCT from the query.
      */
-    public function removeDistinct(): self
+    public function removeDistinct(): static
     {
         $this->parts['distinct'] = false;
         return $this;
@@ -426,7 +426,7 @@ trait SelectOperations
      * Adds SQL_CALC_FOUND_ROWS modifier (MySQL).
      * Useful for pagination with total count.
      */
-    public function calcFoundRows(): self
+    public function calcFoundRows(): static
     {
         $this->parts['modifiers'] = ($this->parts['modifiers'] ?? '') . ' SQL_CALC_FOUND_ROWS';
         return $this;
@@ -435,7 +435,7 @@ trait SelectOperations
     /**
      * Adds HIGH_PRIORITY modifier (MySQL).
      */
-    public function highPriority(): self
+    public function highPriority(): static
     {
         $this->parts['modifiers'] = ($this->parts['modifiers'] ?? '') . ' HIGH_PRIORITY';
         return $this;
@@ -444,7 +444,7 @@ trait SelectOperations
     /**
      * Adds SQL_SMALL_RESULT modifier (MySQL).
      */
-    public function smallResult(): self
+    public function smallResult(): static
     {
         $this->parts['modifiers'] = ($this->parts['modifiers'] ?? '') . ' SQL_SMALL_RESULT';
         return $this;
@@ -453,7 +453,7 @@ trait SelectOperations
     /**
      * Adds SQL_BIG_RESULT modifier (MySQL).
      */
-    public function bigResult(): self
+    public function bigResult(): static
     {
         $this->parts['modifiers'] = ($this->parts['modifiers'] ?? '') . ' SQL_BIG_RESULT';
         return $this;
@@ -462,7 +462,7 @@ trait SelectOperations
     /**
      * Adds SQL_BUFFER_RESULT modifier (MySQL).
      */
-    public function bufferResult(): self
+    public function bufferResult(): static
     {
         $this->parts['modifiers'] = ($this->parts['modifiers'] ?? '') . ' SQL_BUFFER_RESULT';
         return $this;
@@ -471,7 +471,7 @@ trait SelectOperations
     /**
      * Clears the SELECT clause (resets to default).
      */
-    public function clearSelect(): self
+    public function clearSelect(): static
     {
         $this->parts['select'] = '*';
         return $this;
@@ -498,7 +498,7 @@ trait SelectOperations
      * Sets SELECT to only return specific columns from a table.
      * Useful when you want table1.*, table2.id format.
      */
-    public function selectTable(string $table, array $columns = ['*']): self
+    public function selectTable(string $table, array $columns = ['*']): static
     {
         $prefixedColumns = array_map(
             fn($col) => $col === '*' ? "$table.*" : "$table.$col",
@@ -515,7 +515,7 @@ trait SelectOperations
      * @param string $path JSON path (e.g., '$.user.name')
      * @param string $alias Result alias
      */
-    public function selectJson(string $column, string $path, string $alias): self
+    public function selectJson(string $column, string $path, string $alias): static
     {
         $pathPlaceholder = $this->addParam($path);
         $expression = "JSON_EXTRACT($column, $pathPlaceholder)";
@@ -525,7 +525,7 @@ trait SelectOperations
     /**
      * Selects and unquotes a JSON field path.
      */
-    public function selectJsonUnquote(string $column, string $path, string $alias): self
+    public function selectJsonUnquote(string $column, string $path, string $alias): static
     {
         $pathPlaceholder = $this->addParam($path);
         $expression = "JSON_UNQUOTE(JSON_EXTRACT($column, $pathPlaceholder))";

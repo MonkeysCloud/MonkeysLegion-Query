@@ -98,6 +98,7 @@ trait FetchOperations
     {
         // Work on a cloned builder so we don't mutate the original instance.
         $qb = $this->duplicate();
+        $this->reset();
 
         try {
             $qb->preflightResolveTables();
@@ -138,6 +139,7 @@ trait FetchOperations
     {
         // Work on a cloned query builder so we don't mutate the original.
         $qb = $this->duplicate();
+        $this->reset();
 
         try {
             $qb->preflightResolveTables();
@@ -240,6 +242,7 @@ trait FetchOperations
     {
         // Work on a cloned builder so we don't mutate the original chain.
         $qb = $this->duplicate();
+        $this->reset();
 
         try {
             // Keep the same pipeline as other read operations.
@@ -319,6 +322,7 @@ trait FetchOperations
     {
         $qb = $this->duplicate();
         $qb->parts['limit'] = 1;
+        $this->reset();
 
         $sql = $qb->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
@@ -339,6 +343,7 @@ trait FetchOperations
     {
         $qb = $this->duplicate();
         $qb->parts['limit'] = 1;
+        $this->reset();
 
         $sql = $qb->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
@@ -469,6 +474,7 @@ trait FetchOperations
         do {
             $qb = $this->duplicate();
             $qb->limit($size)->offset($page * $size);
+            $this->reset();
 
             $sql = $qb->toSql();
             $stmt = $this->conn->pdo()->prepare($sql);
@@ -490,7 +496,6 @@ trait FetchOperations
             }
 
             $page++;
-
         } while (count($results) === $size);
     }
 
@@ -567,6 +572,7 @@ trait FetchOperations
         do {
             $qb = $this->duplicate();
             $qb->limit($chunkSize)->offset($page * $chunkSize);
+            $this->reset();
 
             $sql = $qb->toSql();
             $stmt = $this->conn->pdo()->prepare($sql);
@@ -587,7 +593,6 @@ trait FetchOperations
             }
 
             $page++;
-
         } while (count($results) === $chunkSize);
     }
 
@@ -623,6 +628,8 @@ trait FetchOperations
         $dataQb = $this->duplicate();
         $dataQb->limit($perPage)->offset($offset);
 
+        $this->reset();
+
         $sql  = $dataQb->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
 
@@ -647,7 +654,7 @@ trait FetchOperations
     /**
      * Alias for limit+offset, similar to Laravel "forPage".
      */
-    public function forPage(int $page, int $perPage = 15): self
+    public function forPage(int $page, int $perPage = 15): static
     {
         $page = max(1, $page);
         return $this->limit($perPage)->offset(($page - 1) * $perPage);
@@ -664,6 +671,7 @@ trait FetchOperations
 
         $qb = $this->duplicate();
         $qb->limit($perPage + 1)->offset($offset);
+        $this->reset();
 
         $sql = $qb->toSql();
         $stmt = $this->conn->pdo()->prepare($sql);
@@ -695,6 +703,7 @@ trait FetchOperations
     public function find(mixed $id, string $column = 'id'): ?array
     {
         $qb = $this->duplicate();
+        $this->reset();
         $qb->where($column, '=', $id)->limit(1);
 
         $sql = $qb->toSql();
@@ -733,6 +742,7 @@ trait FetchOperations
         }
 
         $qb = $this->duplicate();
+        $this->reset();
         $qb->whereIn($column, $ids);
 
         $sql = $qb->toSql();

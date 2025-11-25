@@ -166,36 +166,10 @@ abstract class AbstractQueryBuilder
     }
 
     /**
-     * Resets the query builder to its initial state.
-     */
-    public function reset(): self
-    {
-        $this->parts = [
-            'select'   => '*',
-            'distinct' => false,
-            'from'     => '',
-            'joins'    => [],
-            'where'    => [],
-            'groupBy'  => [],
-            'having'   => [],
-            'orderBy'  => [],
-            'limit'    => null,
-            'offset'   => null,
-            'custom'   => null,
-            'unions'   => [],
-        ];
-        $this->params = [];
-        $this->counter = 0;
-        $this->preflightDone = false;
-        $this->aliasMap = [];
-        return $this;
-    }
-
-    /**
      * Resolve FROM and JOIN tables before SQL generation.
      * Logs BEFORE/AFTER for from/fromTable and each join.
      */
-    protected function preflightResolveTables(): self
+    protected function preflightResolveTables(): static
     {
         // reset per-query alias map
         $this->aliasMap = [];

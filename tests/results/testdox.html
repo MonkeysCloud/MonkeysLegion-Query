@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8"/>
+        <title>Test Documentation</title>
+        <style>
+            body {
+                text-rendering: optimizeLegibility;
+                font-family: Source SansSerif Pro, Arial, sans-serif;
+                font-variant-ligatures: common-ligatures;
+                font-kerning: normal;
+                margin-left: 2rem;
+                background-color: #fff;
+                color: #000;
+            }
+
+            body > ul > li {
+                font-size: larger;
+            }
+
+            h2 {
+                font-size: larger;
+                text-decoration-line: underline;
+                text-decoration-thickness: 2px;
+                margin: 0;
+                padding: 0.5rem 0;
+            }
+
+            ul {
+                list-style: none;
+                margin: 0 0 2rem;
+                padding: 0 0 0 1rem;
+                text-indent: -1rem;
+            }
+
+            .success:before {
+                color: #4e9a06;
+                content: '✓';
+                padding-right: 0.5rem;
+            }
+
+            .defect {
+                color: #a40000;
+            }
+
+            .defect:before {
+                color: #a40000;
+                content: '✗';
+                padding-right: 0.5rem;
+            }
+        </style>
+    </head>
+    <body>
+        <h2>Query Builder</h2>
+        <ul>
+            <li class="success">Select basic</li>
+            <li class="success">Where</li>
+            <li class="success">Or where</li>
+            <li class="success">Join</li>
+            <li class="success">Insert and fetch</li>
+            <li class="success">Update</li>
+            <li class="success">Delete</li>
+            <li class="success">Aggregate count</li>
+            <li class="success">Aggregate sum</li>
+            <li class="success">Transaction</li>
+            <li class="success">Duplicate</li>
+        </ul>
+        <h2>Table Operations</h2>
+        <ul>
+            <li class="success">Set and get table map</li>
+            <li class="success">Add and remove table mapping</li>
+            <li class="success">Clear table map</li>
+            <li class="success">Resolve table</li>
+            <li class="success">Table prefix</li>
+            <li class="success">Get and set table</li>
+            <li class="success">Parts manipulation</li>
+            <li class="success">Reset</li>
+            <li class="success">Counter</li>
+            <li class="success">Duplicate and clone</li>
+            <li class="success">Fresh returns new instance</li>
+            <li class="success">Get connection returns connection</li>
+            <li class="success">Reset bindings</li>
+            <li class="success">Get table columns and schema</li>
+            <li class="success">To array and from array</li>
+            <li class="success">To debug string</li>
+            <li class="defect">Log does not throw</li>
+            <li class="success">When unless tap</li>
+            <li class="success">Macro and call</li>
+            <li class="success">Remove distinct and modifiers</li>
+            <li class="defect">Dump and dd</li>
+        </ul>
+    </body>
+</html>

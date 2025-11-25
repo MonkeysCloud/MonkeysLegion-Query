@@ -1,0 +1,36 @@
+Query Builder
+ [x] Select basic
+ [x] Where
+ [x] Or where
+ [x] Join
+ [x] Insert and fetch
+ [x] Update
+ [x] Delete
+ [x] Aggregate count
+ [x] Aggregate sum
+ [x] Transaction
+ [x] Duplicate
+
+Table Operations
+ [x] Set and get table map
+ [x] Add and remove table mapping
+ [x] Clear table map
+ [x] Resolve table
+ [x] Table prefix
+ [x] Get and set table
+ [x] Parts manipulation
+ [x] Reset
+ [x] Counter
+ [x] Duplicate and clone
+ [x] Fresh returns new instance
+ [x] Get connection returns connection
+ [x] Reset bindings
+ [x] Get table columns and schema
+ [x] To array and from array
+ [x] To debug string
+ [x] Log does not throw
+ [x] When unless tap
+ [x] Macro and call
+ [x] Remove distinct and modifiers
+ [x] Dump and dd
+

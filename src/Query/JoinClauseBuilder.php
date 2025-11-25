@@ -1,6 +1,7 @@
 <?php
 
 namespace MonkeysLegion\Query;
+
 /**
  * Helper class for building complex join conditions.
  * Used internally by joinOn() methods.
@@ -13,14 +14,12 @@ class JoinClauseBuilder
         private string $table,
         private string $alias,
         private string $type
-    )
-    {
-    }
+    ) {}
 
     /**
      * Adds an ON condition.
      */
-    public function on(string $first, string $operator, string $second): self
+    public function on(string $first, string $operator, string $second): static
     {
         $this->conditions[] = [
             'type' => empty($this->conditions) ? '' : 'AND',
@@ -32,7 +31,7 @@ class JoinClauseBuilder
     /**
      * Adds an AND ON condition.
      */
-    public function andOn(string $first, string $operator, string $second): self
+    public function andOn(string $first, string $operator, string $second): static
     {
         $this->conditions[] = [
             'type' => 'AND',
@@ -44,7 +43,7 @@ class JoinClauseBuilder
     /**
      * Adds an OR ON condition.
      */
-    public function orOn(string $first, string $operator, string $second): self
+    public function orOn(string $first, string $operator, string $second): static
     {
         $this->conditions[] = [
             'type' => 'OR',
@@ -56,7 +55,7 @@ class JoinClauseBuilder
     /**
      * Adds a WHERE condition to the join (value binding).
      */
-    public function where(string $column, string $operator, mixed $value, object $qb): self
+    public function where(string $column, string $operator, mixed $value, object $qb): static
     {
         $placeholder = $qb->addParam($value);
         $this->conditions[] = [
@@ -69,7 +68,7 @@ class JoinClauseBuilder
     /**
      * Adds an OR WHERE condition to the join.
      */
-    public function orWhere(string $column, string $operator, mixed $value, object $qb): self
+    public function orWhere(string $column, string $operator, mixed $value, object $qb): static
     {
         $placeholder = $qb->addParam($value);
         $this->conditions[] = [
@@ -82,7 +81,7 @@ class JoinClauseBuilder
     /**
      * Adds a raw condition.
      */
-    public function onRaw(string $sql, array $bindings, object $qb): self
+    public function onRaw(string $sql, array $bindings, object $qb): static
     {
         foreach ($bindings as $value) {
             $placeholder = $qb->addParam($value);

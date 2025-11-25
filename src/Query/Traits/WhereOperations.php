@@ -20,7 +20,7 @@ trait WhereOperations
     /**
      * Adds a WHERE condition.
      */
-    public function where(string $column, string $operator, mixed $value): self
+    public function where(string $column, string $operator, mixed $value): static
     {
         $placeholder = $this->addParam($value);
         $this->parts['where'][] = [
@@ -33,7 +33,7 @@ trait WhereOperations
     /**
      * Adds an AND condition to the WHERE clause.
      */
-    public function andWhere(string $column, string $operator, mixed $value): self
+    public function andWhere(string $column, string $operator, mixed $value): static
     {
         $placeholder = $this->addParam($value);
         $this->parts['where'][] = ['type' => 'AND', 'expr' => "$column $operator $placeholder"];
@@ -43,7 +43,7 @@ trait WhereOperations
     /**
      * Adds an OR condition to the WHERE clause.
      */
-    public function orWhere(string $column, string $operator, mixed $value): self
+    public function orWhere(string $column, string $operator, mixed $value): static
     {
         $placeholder = $this->addParam($value);
         $this->parts['where'][] = ['type' => 'OR', 'expr' => "$column $operator $placeholder"];
@@ -53,7 +53,7 @@ trait WhereOperations
     /**
      * Adds a raw WHERE condition.
      */
-    public function whereRaw(string $sql, array $params = []): self
+    public function whereRaw(string $sql, array $params = []): static
     {
         foreach ($params as $value) {
             $placeholder = $this->addParam($value);
@@ -69,7 +69,7 @@ trait WhereOperations
     /**
      * Adds a WHERE IN condition.
      */
-    public function whereIn(string $column, array $values): self
+    public function whereIn(string $column, array $values): static
     {
         if (empty($values)) {
             $this->parts['where'][] = ['type' => empty($this->parts['where']) ? '' : 'AND', 'expr' => '1=0'];
@@ -87,7 +87,7 @@ trait WhereOperations
     /**
      * Adds a WHERE NOT IN condition.
      */
-    public function whereNotIn(string $column, array $values): self
+    public function whereNotIn(string $column, array $values): static
     {
         if (empty($values)) {
             return $this;
@@ -104,7 +104,7 @@ trait WhereOperations
     /**
      * Adds a WHERE BETWEEN condition.
      */
-    public function whereBetween(string $column, mixed $min, mixed $max): self
+    public function whereBetween(string $column, mixed $min, mixed $max): static
     {
         $minPlaceholder = $this->addParam($min);
         $maxPlaceholder = $this->addParam($max);
@@ -118,7 +118,7 @@ trait WhereOperations
     /**
      * Adds a WHERE IS NULL condition with proper handling.
      */
-    public function whereNull(string $column): self
+    public function whereNull(string $column): static
     {
         $this->parts['where'][] = [
             'type' => empty($this->parts['where']) ? '' : 'AND',
@@ -130,7 +130,7 @@ trait WhereOperations
     /**
      * Adds a WHERE IS NOT NULL condition with proper handling.
      */
-    public function whereNotNull(string $column): self
+    public function whereNotNull(string $column): static
     {
         $this->parts['where'][] = [
             'type' => empty($this->parts['where']) ? '' : 'AND',
@@ -142,7 +142,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE IS NULL condition.
      */
-    public function orWhereNull(string $column): self
+    public function orWhereNull(string $column): static
     {
         $this->parts['where'][] = [
             'type' => 'OR',
@@ -154,7 +154,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE IS NOT NULL condition.
      */
-    public function orWhereNotNull(string $column): self
+    public function orWhereNotNull(string $column): static
     {
         $this->parts['where'][] = [
             'type' => 'OR',
@@ -166,7 +166,7 @@ trait WhereOperations
     /**
      * Adds a WHERE EXISTS condition.
      */
-    public function whereExists(string $subquery, array $params = []): self
+    public function whereExists(string $subquery, array $params = []): static
     {
         foreach ($params as $value) {
             $placeholder = $this->addParam($value);
@@ -182,7 +182,7 @@ trait WhereOperations
     /**
      * Adds a WHERE NOT EXISTS condition.
      */
-    public function whereNotExists(string $subquery, array $params = []): self
+    public function whereNotExists(string $subquery, array $params = []): static
     {
         foreach ($params as $value) {
             $placeholder = $this->addParam($value);
@@ -198,7 +198,7 @@ trait WhereOperations
     /**
      * Adds a WHERE LIKE condition.
      */
-    public function whereLike(string $column, string $pattern): self
+    public function whereLike(string $column, string $pattern): static
     {
         $placeholder = $this->addParam($pattern);
         $this->parts['where'][] = [
@@ -211,7 +211,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE LIKE condition.
      */
-    public function orWhereLike(string $column, string $pattern): self
+    public function orWhereLike(string $column, string $pattern): static
     {
         $placeholder = $this->addParam($pattern);
         $this->parts['where'][] = [
@@ -224,9 +224,9 @@ trait WhereOperations
     /**
      * Groups WHERE conditions with parentheses.
      */
-    public function whereGroup(callable $callback): self
+    public function whereGroup(callable $callback): static
     {
-        $subBuilder = new self($this->conn);
+        $subBuilder = new static($this->conn);
         $callback($subBuilder);
 
         if (!empty($subBuilder->parts['where'])) {
@@ -268,9 +268,9 @@ trait WhereOperations
     /**
      * Groups WHERE conditions with OR (for OR groups).
      */
-    public function orWhereGroup(callable $callback): self
+    public function orWhereGroup(callable $callback): static
     {
-        $subBuilder = new self($this->conn);
+        $subBuilder = new static($this->conn);
         $callback($subBuilder);
 
         if (!empty($subBuilder->parts['where'])) {
@@ -308,9 +308,9 @@ trait WhereOperations
     /**
      * Groups WHERE conditions with AND (explicit AND group).
      */
-    public function andWhereGroup(callable $callback): self
+    public function andWhereGroup(callable $callback): static
     {
-        $subBuilder = new self($this->conn);
+        $subBuilder = new static($this->conn);
         $callback($subBuilder);
 
         if (!empty($subBuilder->parts['where'])) {
@@ -352,7 +352,7 @@ trait WhereOperations
     /**
      * Adds a raw OR condition to the WHERE clause.
      */
-    public function orWhereRaw(string $sql, array $params = []): self
+    public function orWhereRaw(string $sql, array $params = []): static
     {
         foreach ($params as $value) {
             $placeholder = $this->addParam($value);
@@ -368,7 +368,7 @@ trait WhereOperations
     /**
      * Adds a WHERE NOT LIKE condition.
      */
-    public function whereNotLike(string $column, string $pattern): self
+    public function whereNotLike(string $column, string $pattern): static
     {
         $placeholder = $this->addParam($pattern);
         $this->parts['where'][] = [
@@ -381,7 +381,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE NOT LIKE condition.
      */
-    public function orWhereNotLike(string $column, string $pattern): self
+    public function orWhereNotLike(string $column, string $pattern): static
     {
         $placeholder = $this->addParam($pattern);
         $this->parts['where'][] = [
@@ -394,7 +394,7 @@ trait WhereOperations
     /**
      * Adds a WHERE NOT BETWEEN condition.
      */
-    public function whereNotBetween(string $column, mixed $min, mixed $max): self
+    public function whereNotBetween(string $column, mixed $min, mixed $max): static
     {
         $minPlaceholder = $this->addParam($min);
         $maxPlaceholder = $this->addParam($max);
@@ -408,7 +408,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE IN condition.
      */
-    public function orWhereIn(string $column, array $values): self
+    public function orWhereIn(string $column, array $values): static
     {
         if (empty($values)) {
             $this->parts['where'][] = ['type' => 'OR', 'expr' => '1=0'];
@@ -426,7 +426,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE NOT IN condition.
      */
-    public function orWhereNotIn(string $column, array $values): self
+    public function orWhereNotIn(string $column, array $values): static
     {
         if (empty($values)) {
             return $this;
@@ -443,7 +443,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE BETWEEN condition.
      */
-    public function orWhereBetween(string $column, mixed $min, mixed $max): self
+    public function orWhereBetween(string $column, mixed $min, mixed $max): static
     {
         $minPlaceholder = $this->addParam($min);
         $maxPlaceholder = $this->addParam($max);
@@ -457,7 +457,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE NOT BETWEEN condition.
      */
-    public function orWhereNotBetween(string $column, mixed $min, mixed $max): self
+    public function orWhereNotBetween(string $column, mixed $min, mixed $max): static
     {
         $minPlaceholder = $this->addParam($min);
         $maxPlaceholder = $this->addParam($max);
@@ -471,7 +471,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE EXISTS condition.
      */
-    public function orWhereExists(string $subquery, array $params = []): self
+    public function orWhereExists(string $subquery, array $params = []): static
     {
         foreach ($params as $value) {
             $placeholder = $this->addParam($value);
@@ -487,7 +487,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE NOT EXISTS condition.
      */
-    public function orWhereNotExists(string $subquery, array $params = []): self
+    public function orWhereNotExists(string $subquery, array $params = []): static
     {
         foreach ($params as $value) {
             $placeholder = $this->addParam($value);
@@ -503,7 +503,7 @@ trait WhereOperations
     /**
      * Adds a WHERE condition comparing two columns.
      */
-    public function whereColumn(string $column1, string $operator, string $column2): self
+    public function whereColumn(string $column1, string $operator, string $column2): static
     {
         $this->parts['where'][] = [
             'type' => empty($this->parts['where']) ? '' : 'AND',
@@ -515,7 +515,7 @@ trait WhereOperations
     /**
      * Adds an OR WHERE condition comparing two columns.
      */
-    public function orWhereColumn(string $column1, string $operator, string $column2): self
+    public function orWhereColumn(string $column1, string $operator, string $column2): static
     {
         $this->parts['where'][] = [
             'type' => 'OR',
@@ -527,7 +527,7 @@ trait WhereOperations
     /**
      * Adds a WHERE DATE() condition.
      */
-    public function whereDate(string $column, string $operator, string $date): self
+    public function whereDate(string $column, string $operator, string $date): static
     {
         $placeholder = $this->addParam($date);
         $this->parts['where'][] = [
@@ -540,7 +540,7 @@ trait WhereOperations
     /**
      * Adds a WHERE YEAR() condition.
      */
-    public function whereYear(string $column, string $operator, int $year): self
+    public function whereYear(string $column, string $operator, int $year): static
     {
         $placeholder = $this->addParam($year);
         $this->parts['where'][] = [
@@ -553,7 +553,7 @@ trait WhereOperations
     /**
      * Adds a WHERE MONTH() condition.
      */
-    public function whereMonth(string $column, string $operator, int $month): self
+    public function whereMonth(string $column, string $operator, int $month): static
     {
         $placeholder = $this->addParam($month);
         $this->parts['where'][] = [
@@ -566,7 +566,7 @@ trait WhereOperations
     /**
      * Adds a WHERE DAY() condition.
      */
-    public function whereDay(string $column, string $operator, int $day): self
+    public function whereDay(string $column, string $operator, int $day): static
     {
         $placeholder = $this->addParam($day);
         $this->parts['where'][] = [
@@ -579,7 +579,7 @@ trait WhereOperations
     /**
      * Adds a WHERE TIME() condition.
      */
-    public function whereTime(string $column, string $operator, string $time): self
+    public function whereTime(string $column, string $operator, string $time): static
     {
         $placeholder = $this->addParam($time);
         $this->parts['where'][] = [
@@ -592,7 +592,7 @@ trait WhereOperations
     /**
      * Adds a WHERE JSON_CONTAINS() condition.
      */
-    public function whereJsonContains(string $column, string $path, mixed $value): self
+    public function whereJsonContains(string $column, string $path, mixed $value): static
     {
         $placeholder = $this->addParam(json_encode($value));
         $pathPlaceholder = $this->addParam($path);
@@ -606,7 +606,7 @@ trait WhereOperations
     /**
      * Adds a WHERE JSON_LENGTH() condition.
      */
-    public function whereJsonLength(string $column, string $operator, int $length, ?string $path = null): self
+    public function whereJsonLength(string $column, string $operator, int $length, ?string $path = null): static
     {
         $placeholder = $this->addParam($length);
         $expr = $path
@@ -623,7 +623,7 @@ trait WhereOperations
     /**
      * Adds a WHERE condition for JSON path extraction.
      */
-    public function whereJsonExtract(string $column, string $path, string $operator, mixed $value): self
+    public function whereJsonExtract(string $column, string $path, string $operator, mixed $value): static
     {
         $pathPlaceholder = $this->addParam($path);
         $valuePlaceholder = $this->addParam($value);
@@ -637,7 +637,7 @@ trait WhereOperations
     /**
      * Adds a MATCH() AGAINST() full-text search condition.
      */
-    public function whereFullText(string|array $columns, string $search, string $mode = 'NATURAL LANGUAGE'): self
+    public function whereFullText(string|array $columns, string $search, string $mode = 'NATURAL LANGUAGE'): static
     {
         $cols = is_array($columns) ? implode(', ', $columns) : $columns;
         $placeholder = $this->addParam($search);
@@ -651,7 +651,7 @@ trait WhereOperations
     /**
      * Adds a bitwise AND condition.
      */
-    public function whereBitwise(string $column, int $value, string $operator = '&'): self
+    public function whereBitwise(string $column, int $value, string $operator = '&'): static
     {
         $placeholder = $this->addParam($value);
         $this->parts['where'][] = [
@@ -664,7 +664,7 @@ trait WhereOperations
     /**
      * Adds a FIND_IN_SET() condition.
      */
-    public function whereFindInSet(string $value, string $column): self
+    public function whereFindInSet(string $value, string $column): static
     {
         $placeholder = $this->addParam($value);
         $this->parts['where'][] = [
@@ -673,5 +673,4 @@ trait WhereOperations
         ];
         return $this;
     }
-
 }

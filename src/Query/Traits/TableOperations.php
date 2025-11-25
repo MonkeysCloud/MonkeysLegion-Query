@@ -21,6 +21,12 @@ use PDO;
  */
 trait TableOperations
 {
+    /**
+     * Sets the table name mapping.
+     * 
+     * @param array $map New table name mapping
+     * @return void
+     */
     public function setTableMap(array $map): void
     {
         $this->tableMap = $map + $this->tableMap;
@@ -29,9 +35,9 @@ trait TableOperations
     /**
      * Creates a deep duplicate of the query builder for reuse.
      */
-    public function duplicate(): self
+    public function duplicate(): static
     {
-        $clone = new self($this->conn);
+        $clone = new static($this->conn);
         $clone->parts = $this->deepCopyArray($this->parts);
         $clone->params = $this->deepCopyArray($this->params);
         $clone->counter = $this->counter;
@@ -74,7 +80,7 @@ trait TableOperations
     /**
      * Adds a single table mapping.
      */
-    public function addTableMapping(string $from, string $to): self
+    public function addTableMapping(string $from, string $to): static
     {
         $this->tableMap[$from] = $to;
         return $this;
@@ -83,7 +89,7 @@ trait TableOperations
     /**
      * Removes a table mapping.
      */
-    public function removeTableMapping(string $table): self
+    public function removeTableMapping(string $table): static
     {
         unset($this->tableMap[$table]);
         return $this;
@@ -92,7 +98,7 @@ trait TableOperations
     /**
      * Clears all table mappings.
      */
-    public function clearTableMap(): self
+    public function clearTableMap(): static
     {
         $this->tableMap = [];
         return $this;
@@ -101,7 +107,7 @@ trait TableOperations
     /**
      * Sets a prefix for table names.
      */
-    public function setTablePrefix(string $prefix): self
+    public function setTablePrefix(string $prefix): static
     {
         $this->parts['tablePrefix'] = $prefix;
         return $this;
@@ -164,7 +170,7 @@ trait TableOperations
     /**
      * Sets the main table (alternative to from()).
      */
-    public function setTable(string $table, ?string $alias = null): self
+    public function setTable(string $table, ?string $alias = null): static
     {
         return $this->from($table, $alias);
     }
@@ -226,7 +232,7 @@ trait TableOperations
     /**
      * Sets a specific query part.
      */
-    public function setPart(string $key, mixed $value): self
+    public function setPart(string $key, mixed $value): static
     {
         $this->parts[$key] = $value;
         return $this;
@@ -243,39 +249,42 @@ trait TableOperations
     /**
      * Removes a query part.
      */
-    public function removePart(string $key): self
+    public function removePart(string $key): static
     {
         unset($this->parts[$key]);
         return $this;
     }
 
     /**
-     * Resets the query builder to initial state.
-     * Keeps connection and table map but clears all query parts.
+     * Resets the query builder to its initial state.
      */
-    public function reset(): self
+    public function reset(): static
     {
         $this->parts = [
-            'select' => '*',
-            'from' => null,
-            'join' => [],
-            'where' => [],
-            'groupBy' => [],
-            'having' => [],
-            'orderBy' => [],
-            'limit' => null,
-            'offset' => null,
+            'select'   => '*',
             'distinct' => false,
+            'from'     => '',
+            'joins'    => [],
+            'where'    => [],
+            'groupBy'  => [],
+            'having'   => [],
+            'orderBy'  => [],
+            'limit'    => null,
+            'offset'   => null,
+            'custom'   => null,
+            'unions'   => [],
         ];
         $this->params = [];
         $this->counter = 0;
+        $this->preflightDone = false;
+        $this->aliasMap = [];
         return $this;
     }
 
     /**
      * Clears all bound parameters.
      */
-    public function resetBindings(): self
+    public function resetBindings(): static
     {
         $this->params = [];
         $this->counter = 0;
@@ -285,9 +294,9 @@ trait TableOperations
     /**
      * Creates a fresh query builder instance with the same connection.
      */
-    public function fresh(): self
+    public function fresh(): static
     {
-        return new self($this->conn);
+        return new static($this->conn);
     }
 
     /**
@@ -301,7 +310,7 @@ trait TableOperations
     /**
      * Alias for duplicate() for clarity.
      */
-    public function clone(): self
+    public function clone(): static
     {
         return $this->duplicate();
     }
@@ -317,7 +326,7 @@ trait TableOperations
     /**
      * Sets the parameter counter value.
      */
-    public function setCounter(int $counter): self
+    public function setCounter(int $counter): static
     {
         $this->counter = $counter;
         return $this;
@@ -326,7 +335,7 @@ trait TableOperations
     /**
      * Resets the parameter counter to zero.
      */
-    public function resetCounter(): self
+    public function resetCounter(): static
     {
         $this->counter = 0;
         return $this;
@@ -457,7 +466,7 @@ trait TableOperations
     /**
      * Restores query state from an array.
      */
-    public function fromArray(array $state): self
+    public function fromArray(array $state): static
     {
         $this->parts = $state['parts'] ?? [];
         $this->params = $state['params'] ?? [];
@@ -469,7 +478,7 @@ trait TableOperations
     /**
      * Dumps the query builder state for debugging.
      */
-    public function dump(): self
+    public function dump(): static
     {
         echo "\n=== Query Builder State ===\n";
         echo "SQL: " . $this->toSql() . "\n";
@@ -506,7 +515,7 @@ trait TableOperations
     /**
      * Logs the current query for debugging.
      */
-    public function log(string $prefix = '[QueryBuilder]'): self
+    public function log(string $prefix = '[QueryBuilder]'): static
     {
         error_log("$prefix SQL: " . $this->toSql());
         error_log("$prefix Params: " . json_encode($this->params));
@@ -518,7 +527,7 @@ trait TableOperations
      *
      * Example: ->when($isActive, fn($q) => $q->where('status', '=', 'active'))
      */
-    public function when(bool $condition, callable $callback, ?callable $default = null): self
+    public function when(bool $condition, callable $callback, ?callable $default = null): static
     {
         if ($condition) {
             $callback($this);
@@ -532,7 +541,7 @@ trait TableOperations
     /**
      * Conditionally executes a callback if condition is false.
      */
-    public function unless(bool $condition, callable $callback, ?callable $default = null): self
+    public function unless(bool $condition, callable $callback, ?callable $default = null): static
     {
         return $this->when(!$condition, $callback, $default);
     }
@@ -541,7 +550,7 @@ trait TableOperations
      * Taps into the query builder without breaking the chain.
      * Useful for debugging or side effects.
      */
-    public function tap(callable $callback): self
+    public function tap(callable $callback): static
     {
         $callback($this);
         return $this;
