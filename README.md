@@ -602,7 +602,7 @@ foreach ($qb->from('users')->lazy(1000) as $user) {
 $qb->from('users')->each(function($user, $index) {
     echo "Processing user {$index}: {$user['name']}\n";
 });
-
+```
 ### Reusing the Builder
 
 By default, read operations (like `get`, `count`, `first`) do **not** reset the builder state. This allows you to chain multiple operations on the same query configuration.
@@ -628,7 +628,6 @@ $qb->reset();
 
 // Second query
 $posts = $qb->from('posts')->where('published', 1)->fetchAll();
-```
 ```
 
 ### Pagination
