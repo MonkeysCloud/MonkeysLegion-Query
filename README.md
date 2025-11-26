@@ -602,6 +602,33 @@ foreach ($qb->from('users')->lazy(1000) as $user) {
 $qb->from('users')->each(function($user, $index) {
     echo "Processing user {$index}: {$user['name']}\n";
 });
+
+### Reusing the Builder
+
+By default, read operations (like `get`, `count`, `first`) do **not** reset the builder state. This allows you to chain multiple operations on the same query configuration.
+
+```php
+$qb->from('users')->where('active', 1);
+
+// Run count
+$count = $qb->count();
+
+// Run fetch (reuses the same WHERE clause)
+$users = $qb->fetchAll();
+```
+
+If you want to reuse the same builder instance for a completely new query, you must manually reset it:
+
+```php
+// First query
+$users = $qb->from('users')->where('active', 1)->fetchAll();
+
+// Reset state
+$qb->reset();
+
+// Second query
+$posts = $qb->from('posts')->where('published', 1)->fetchAll();
+```
 ```
 
 ### Pagination
