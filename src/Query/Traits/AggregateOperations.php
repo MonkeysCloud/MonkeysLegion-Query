@@ -24,8 +24,8 @@ trait AggregateOperations
     {
         // Duplicate and resolve tables before SQL generation
         $countQb = $this->duplicate();
-        $this->reset();
-        
+
+
         try {
             $countQb->preflightResolveTables();
         } catch (\Throwable $e) {
@@ -166,7 +166,7 @@ trait AggregateOperations
     public function countDistinct(string $column): int
     {
         $qb = $this->duplicate();
-        $this->reset();
+
 
         try {
             $qb->preflightResolveTables();
@@ -271,7 +271,7 @@ trait AggregateOperations
     public function groupConcat(string $column, string $separator = ',', bool $distinct = false): ?string
     {
         $qb = $this->duplicate();
-        $this->reset();
+
 
         try {
             $qb->preflightResolveTables();
@@ -348,7 +348,7 @@ trait AggregateOperations
         $expression = "CASE WHEN $column $operator $placeholder THEN 1 END";
 
         $qb = $this->duplicate();
-        $this->reset();
+
 
         try {
             $qb->preflightResolveTables();
