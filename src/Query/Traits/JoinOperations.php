@@ -23,7 +23,7 @@ trait JoinOperations
         string $operator,
         string $second,
         string $type = 'INNER'
-    ): self {
+    ): static {
         $clause = strtoupper($type) . " JOIN $table AS $alias ON $first $operator $second";
         $this->parts['joins'][] = $clause;
         return $this;
@@ -32,7 +32,7 @@ trait JoinOperations
     /**
      * Adds an INNER JOIN clause.
      */
-    public function innerJoin(string $table, string $alias, string $first, string $operator, string $second): self
+    public function innerJoin(string $table, string $alias, string $first, string $operator, string $second): static
     {
         return $this->join($table, $alias, $first, $operator, $second, 'INNER');
     }
@@ -40,7 +40,7 @@ trait JoinOperations
     /**
      * Adds a LEFT JOIN clause.
      */
-    public function leftJoin(string $table, string $alias, string $first, string $operator, string $second): self
+    public function leftJoin(string $table, string $alias, string $first, string $operator, string $second): static
     {
         return $this->join($table, $alias, $first, $operator, $second, 'LEFT');
     }
@@ -48,7 +48,7 @@ trait JoinOperations
     /**
      * Adds a RIGHT JOIN clause.
      */
-    public function rightJoin(string $table, string $alias, string $first, string $operator, string $second): self
+    public function rightJoin(string $table, string $alias, string $first, string $operator, string $second): static
     {
         return $this->join($table, $alias, $first, $operator, $second, 'RIGHT');
     }
@@ -56,7 +56,7 @@ trait JoinOperations
     /**
      * Adds a CROSS JOIN clause.
      */
-    public function crossJoin(string $table, ?string $alias = null): self
+    public function crossJoin(string $table, ?string $alias = null): static
     {
         $tableExpr = $alias ? "$table AS $alias" : $table;
         $this->parts['joins'][] = "CROSS JOIN $tableExpr";
@@ -66,7 +66,7 @@ trait JoinOperations
     /**
      * Adds a FULL OUTER JOIN clause (PostgreSQL, some MySQL versions).
      */
-    public function fullOuterJoin(string $table, string $alias, string $first, string $operator, string $second): self
+    public function fullOuterJoin(string $table, string $alias, string $first, string $operator, string $second): static
     {
         return $this->join($table, $alias, $first, $operator, $second, 'FULL OUTER');
     }
@@ -74,7 +74,7 @@ trait JoinOperations
     /**
      * Adds a LEFT OUTER JOIN clause (explicit OUTER keyword).
      */
-    public function leftOuterJoin(string $table, string $alias, string $first, string $operator, string $second): self
+    public function leftOuterJoin(string $table, string $alias, string $first, string $operator, string $second): static
     {
         return $this->join($table, $alias, $first, $operator, $second, 'LEFT OUTER');
     }
@@ -82,7 +82,7 @@ trait JoinOperations
     /**
      * Adds a RIGHT OUTER JOIN clause (explicit OUTER keyword).
      */
-    public function rightOuterJoin(string $table, string $alias, string $first, string $operator, string $second): self
+    public function rightOuterJoin(string $table, string $alias, string $first, string $operator, string $second): static
     {
         return $this->join($table, $alias, $first, $operator, $second, 'RIGHT OUTER');
     }
@@ -96,7 +96,7 @@ trait JoinOperations
      *          ->andOn('p.status', '=', 'published');
      * })
      */
-    public function joinOn(string $table, string $alias, callable $callback, string $type = 'INNER'): self
+    public function joinOn(string $table, string $alias, callable $callback, string $type = 'INNER'): static
     {
         $joinBuilder = new JoinClauseBuilder($table, $alias, $type);
         $callback($joinBuilder);
@@ -108,7 +108,7 @@ trait JoinOperations
     /**
      * Adds an INNER JOIN with multiple conditions.
      */
-    public function innerJoinOn(string $table, string $alias, callable $callback): self
+    public function innerJoinOn(string $table, string $alias, callable $callback): static
     {
         return $this->joinOn($table, $alias, $callback, 'INNER');
     }
@@ -116,7 +116,7 @@ trait JoinOperations
     /**
      * Adds a LEFT JOIN with multiple conditions.
      */
-    public function leftJoinOn(string $table, string $alias, callable $callback): self
+    public function leftJoinOn(string $table, string $alias, callable $callback): static
     {
         return $this->joinOn($table, $alias, $callback, 'LEFT');
     }
@@ -124,7 +124,7 @@ trait JoinOperations
     /**
      * Adds a RIGHT JOIN with multiple conditions.
      */
-    public function rightJoinOn(string $table, string $alias, callable $callback): self
+    public function rightJoinOn(string $table, string $alias, callable $callback): static
     {
         return $this->joinOn($table, $alias, $callback, 'RIGHT');
     }
@@ -132,7 +132,7 @@ trait JoinOperations
     /**
      * Adds a raw JOIN clause.
      */
-    public function joinRaw(string $sql, array $bindings = []): self
+    public function joinRaw(string $sql, array $bindings = []): static
     {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
@@ -162,7 +162,7 @@ trait JoinOperations
         string $second,
         string $type = 'INNER',
         array $bindings = []
-    ): self {
+    ): static {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
             $subquery = preg_replace('/\?/', $placeholder, $subquery, 1);
@@ -183,7 +183,7 @@ trait JoinOperations
         string $operator,
         string $second,
         array $bindings = []
-    ): self {
+    ): static {
         return $this->joinSub($subquery, $alias, $first, $operator, $second, 'LEFT', $bindings);
     }
 
@@ -197,7 +197,7 @@ trait JoinOperations
         string $operator,
         string $second,
         array $bindings = []
-    ): self {
+    ): static {
         return $this->joinSub($subquery, $alias, $first, $operator, $second, 'RIGHT', $bindings);
     }
 
@@ -211,8 +211,8 @@ trait JoinOperations
         string $operator,
         string $second,
         string $type = 'INNER'
-    ): self {
-        $subBuilder = new self($this->conn);
+    ): static {
+        $subBuilder = new static($this->conn);
         $callback($subBuilder);
 
         $subquery = $subBuilder->toSql();
@@ -242,7 +242,7 @@ trait JoinOperations
         string $first,
         string $operator,
         string $second
-    ): self {
+    ): static {
         return $this->joinSubQuery($callback, $alias, $first, $operator, $second, 'LEFT');
     }
 
@@ -252,7 +252,7 @@ trait JoinOperations
      * Example: ->joinUsing('posts', 'p', 'user_id')
      * Results in: INNER JOIN posts AS p USING (user_id)
      */
-    public function joinUsing(string $table, string $alias, string|array $columns, string $type = 'INNER'): self
+    public function joinUsing(string $table, string $alias, string|array $columns, string $type = 'INNER'): static
     {
         $columnList = is_array($columns) ? implode(', ', $columns) : $columns;
         $clause = strtoupper($type) . " JOIN $table AS $alias USING ($columnList)";
@@ -263,7 +263,7 @@ trait JoinOperations
     /**
      * INNER JOIN with USING clause.
      */
-    public function innerJoinUsing(string $table, string $alias, string|array $columns): self
+    public function innerJoinUsing(string $table, string $alias, string|array $columns): static
     {
         return $this->joinUsing($table, $alias, $columns, 'INNER');
     }
@@ -271,7 +271,7 @@ trait JoinOperations
     /**
      * LEFT JOIN with USING clause.
      */
-    public function leftJoinUsing(string $table, string $alias, string|array $columns): self
+    public function leftJoinUsing(string $table, string $alias, string|array $columns): static
     {
         return $this->joinUsing($table, $alias, $columns, 'LEFT');
     }
@@ -279,7 +279,7 @@ trait JoinOperations
     /**
      * RIGHT JOIN with USING clause.
      */
-    public function rightJoinUsing(string $table, string $alias, string|array $columns): self
+    public function rightJoinUsing(string $table, string $alias, string|array $columns): static
     {
         return $this->joinUsing($table, $alias, $columns, 'RIGHT');
     }
@@ -288,7 +288,7 @@ trait JoinOperations
      * Adds a NATURAL JOIN (automatically joins on columns with same name).
      * Use with caution - explicit joins are generally preferred.
      */
-    public function naturalJoin(string $table, ?string $alias = null, string $type = 'INNER'): self
+    public function naturalJoin(string $table, ?string $alias = null, string $type = 'INNER'): static
     {
         $tableExpr = $alias ? "$table AS $alias" : $table;
         $clause = "NATURAL " . strtoupper($type) . " JOIN $tableExpr";
@@ -299,7 +299,7 @@ trait JoinOperations
     /**
      * Adds a NATURAL LEFT JOIN.
      */
-    public function naturalLeftJoin(string $table, ?string $alias = null): self
+    public function naturalLeftJoin(string $table, ?string $alias = null): static
     {
         return $this->naturalJoin($table, $alias, 'LEFT');
     }
@@ -307,7 +307,7 @@ trait JoinOperations
     /**
      * Adds a NATURAL RIGHT JOIN.
      */
-    public function naturalRightJoin(string $table, ?string $alias = null): self
+    public function naturalRightJoin(string $table, ?string $alias = null): static
     {
         return $this->naturalJoin($table, $alias, 'RIGHT');
     }
@@ -321,7 +321,7 @@ trait JoinOperations
         string $alias,
         array $bindings = [],
         string $type = 'LEFT'
-    ): self {
+    ): static {
         foreach ($bindings as $value) {
             $placeholder = $this->addParam($value);
             $subquery = preg_replace('/\?/', $placeholder, $subquery, 1);
@@ -335,7 +335,7 @@ trait JoinOperations
     /**
      * LEFT JOIN LATERAL.
      */
-    public function leftJoinLateral(string $subquery, string $alias, array $bindings = []): self
+    public function leftJoinLateral(string $subquery, string $alias, array $bindings = []): static
     {
         return $this->joinLateral($subquery, $alias, $bindings, 'LEFT');
     }
@@ -343,7 +343,7 @@ trait JoinOperations
     /**
      * INNER JOIN LATERAL.
      */
-    public function innerJoinLateral(string $subquery, string $alias, array $bindings = []): self
+    public function innerJoinLateral(string $subquery, string $alias, array $bindings = []): static
     {
         return $this->joinLateral($subquery, $alias, $bindings, 'INNER');
     }
@@ -359,7 +359,7 @@ trait JoinOperations
         string $operator,
         string $second,
         string $type = 'INNER'
-    ): self {
+    ): static {
         if ($condition) {
             return $this->join($table, $alias, $first, $operator, $second, $type);
         }
@@ -376,7 +376,7 @@ trait JoinOperations
         string $first,
         string $operator,
         string $second
-    ): self {
+    ): static {
         return $this->joinWhen($condition, $table, $alias, $first, $operator, $second, 'LEFT');
     }
 
@@ -399,7 +399,7 @@ trait JoinOperations
     /**
      * Removes all joins.
      */
-    public function clearJoins(): self
+    public function clearJoins(): static
     {
         $this->parts['joins'] = [];
         return $this;
@@ -428,7 +428,7 @@ trait JoinOperations
         string $operator,
         string $second,
         string $type = 'INNER'
-    ): self {
+    ): static {
         $table = $this->getTableName();
 
         if (!$table) {
@@ -441,7 +441,7 @@ trait JoinOperations
     /**
      * Performs a LEFT self-join.
      */
-    public function leftSelfJoin(string $alias, string $first, string $operator, string $second): self
+    public function leftSelfJoin(string $alias, string $first, string $operator, string $second): static
     {
         return $this->selfJoin($alias, $first, $operator, $second, 'LEFT');
     }

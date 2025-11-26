@@ -68,7 +68,7 @@ trait Identifier
     {
         $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
-        return match($driver) {
+        return match ($driver) {
             'mysql' => '`',
             'pgsql', 'sqlite' => '"',
             'sqlsrv', 'dblib' => '[',  // SQL Server uses brackets
@@ -83,7 +83,7 @@ trait Identifier
     {
         $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
-        return match($driver) {
+        return match ($driver) {
             'sqlsrv', 'dblib' => ']',
             default => $this->getQuoteChar(),
         };
@@ -130,7 +130,7 @@ trait Identifier
         $parts = explode('.', $ref);
         $count = count($parts);
 
-        return match($count) {
+        return match ($count) {
             3 => [$parts[0], $parts[1], $parts[2]],  // database.schema.table
             2 => [null, $parts[0], $parts[1]],        // schema.table
             1 => [null, null, $parts[0]],             // table
@@ -301,14 +301,68 @@ trait Identifier
      * Common SQL reserved words.
      */
     protected array $reservedWords = [
-        'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'WHERE', 'JOIN',
-        'LEFT', 'RIGHT', 'INNER', 'OUTER', 'ON', 'AS', 'AND', 'OR', 'NOT',
-        'IN', 'BETWEEN', 'LIKE', 'IS', 'NULL', 'TRUE', 'FALSE', 'ORDER',
-        'BY', 'GROUP', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'ALL', 'DISTINCT',
-        'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'CASE', 'WHEN', 'THEN', 'ELSE',
-        'END', 'CREATE', 'ALTER', 'DROP', 'TABLE', 'INDEX', 'VIEW', 'DATABASE',
-        'SCHEMA', 'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'CONSTRAINT',
-        'UNIQUE', 'DEFAULT', 'CHECK', 'CASCADE', 'SET', 'GRANT', 'REVOKE',
+        'SELECT',
+        'INSERT',
+        'UPDATE',
+        'DELETE',
+        'FROM',
+        'WHERE',
+        'JOIN',
+        'LEFT',
+        'RIGHT',
+        'INNER',
+        'OUTER',
+        'ON',
+        'AS',
+        'AND',
+        'OR',
+        'NOT',
+        'IN',
+        'BETWEEN',
+        'LIKE',
+        'IS',
+        'NULL',
+        'TRUE',
+        'FALSE',
+        'ORDER',
+        'BY',
+        'GROUP',
+        'HAVING',
+        'LIMIT',
+        'OFFSET',
+        'UNION',
+        'ALL',
+        'DISTINCT',
+        'COUNT',
+        'SUM',
+        'AVG',
+        'MIN',
+        'MAX',
+        'CASE',
+        'WHEN',
+        'THEN',
+        'ELSE',
+        'END',
+        'CREATE',
+        'ALTER',
+        'DROP',
+        'TABLE',
+        'INDEX',
+        'VIEW',
+        'DATABASE',
+        'SCHEMA',
+        'PRIMARY',
+        'KEY',
+        'FOREIGN',
+        'REFERENCES',
+        'CONSTRAINT',
+        'UNIQUE',
+        'DEFAULT',
+        'CHECK',
+        'CASCADE',
+        'SET',
+        'GRANT',
+        'REVOKE',
     ];
 
     /**
@@ -322,7 +376,7 @@ trait Identifier
     /**
      * Adds custom reserved words.
      */
-    public function addReservedWords(array $words): self
+    public function addReservedWords(array $words): static
     {
         $this->reservedWords = array_merge(
             $this->reservedWords,
@@ -451,7 +505,7 @@ trait Identifier
      */
     public function quoteColumns(array $columns): array
     {
-        return array_map(function($col) {
+        return array_map(function ($col) {
             if ($this->hasWildcard($col)) {
                 return $this->quoteWildcard($col);
             }
@@ -546,7 +600,7 @@ trait Identifier
     {
         $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
-        return match($driver) {
+        return match ($driver) {
             'pgsql' => $this->toLowerIdentifier($ident),
             'oracle' => $this->toUpperIdentifier($ident),
             default => $ident,

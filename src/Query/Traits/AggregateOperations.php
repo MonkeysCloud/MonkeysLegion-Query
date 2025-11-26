@@ -25,6 +25,7 @@ trait AggregateOperations
         // Duplicate and resolve tables before SQL generation
         $countQb = $this->duplicate();
 
+
         try {
             $countQb->preflightResolveTables();
         } catch (\Throwable $e) {
@@ -166,6 +167,7 @@ trait AggregateOperations
     {
         $qb = $this->duplicate();
 
+
         try {
             $qb->preflightResolveTables();
         } catch (\Throwable $e) {
@@ -270,6 +272,7 @@ trait AggregateOperations
     {
         $qb = $this->duplicate();
 
+
         try {
             $qb->preflightResolveTables();
         } catch (\Throwable $e) {
@@ -345,6 +348,7 @@ trait AggregateOperations
         $expression = "CASE WHEN $column $operator $placeholder THEN 1 END";
 
         $qb = $this->duplicate();
+
 
         try {
             $qb->preflightResolveTables();

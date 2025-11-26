@@ -19,7 +19,7 @@ trait OrderGroupOperations
     /**
      * Adds a GROUP BY clause.
      */
-    public function groupBy(string ...$columns): self
+    public function groupBy(string ...$columns): static
     {
         $this->parts['groupBy'] = array_unique([...$this->parts['groupBy'], ...$columns]);
         return $this;
@@ -28,7 +28,7 @@ trait OrderGroupOperations
     /**
      * Adds a HAVING clause.
      */
-    public function having(string $column, string $operator, mixed $value): self
+    public function having(string $column, string $operator, mixed $value): static
     {
         $placeholder = $this->addParam($value);
         $this->parts['having'][] = "$column $operator $placeholder";
@@ -38,7 +38,7 @@ trait OrderGroupOperations
     /**
      * Adds a raw HAVING clause.
      */
-    public function havingRaw(string $sql, array $params = []): self
+    public function havingRaw(string $sql, array $params = []): static
     {
         foreach ($params as $value) {
             $placeholder = $this->addParam($value);
@@ -51,7 +51,7 @@ trait OrderGroupOperations
     /**
      * Adds an ORDER BY clause.
      */
-    public function orderBy(string $column, string $direction = 'ASC'): self
+    public function orderBy(string $column, string $direction = 'ASC'): static
     {
         $this->parts['orderBy'][] = "$column " . strtoupper($direction);
         return $this;
@@ -60,7 +60,7 @@ trait OrderGroupOperations
     /**
      * Orders by raw SQL expression.
      */
-    public function orderByRaw(string $sql): self
+    public function orderByRaw(string $sql): static
     {
         $this->parts['orderBy'][] = $sql;
         return $this;
@@ -69,7 +69,7 @@ trait OrderGroupOperations
     /**
      * Sets the LIMIT for the query.
      */
-    public function limit(int $limit): self
+    public function limit(int $limit): static
     {
         $this->parts['limit'] = max(0, $limit);
         return $this;
@@ -78,7 +78,7 @@ trait OrderGroupOperations
     /**
      * Sets the OFFSET for the query.
      */
-    public function offset(int $offset): self
+    public function offset(int $offset): static
     {
         $this->parts['offset'] = max(0, $offset);
         return $this;
@@ -87,7 +87,7 @@ trait OrderGroupOperations
     /**
      * Adds a UNION clause.
      */
-    public function union(string $sql, array $params = [], bool $all = false): self
+    public function union(string $sql, array $params = [], bool $all = false): static
     {
         $this->parts['unions'][] = [
             'sql' => $sql,

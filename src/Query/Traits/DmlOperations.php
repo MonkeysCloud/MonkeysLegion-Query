@@ -21,7 +21,7 @@ trait DmlOperations
     /**
      * Sets a custom SQL statement.
      */
-    public function custom(string $sql, array $params = []): self
+    public function custom(string $sql, array $params = []): static
     {
         $this->parts['custom'] = $sql;
         $this->params = $params;
@@ -54,7 +54,7 @@ trait DmlOperations
         // Build ":col1, :col2, :col3"
         $placeholders = implode(
             ', ',
-            array_map(fn (string $k) => ':' . $k, $columns)
+            array_map(fn(string $k) => ':' . $k, $columns)
         );
 
         $sql = "INSERT INTO {$table} ({$cols}) VALUES ({$placeholders})";
@@ -63,7 +63,7 @@ trait DmlOperations
 
         // Map ":col" => value
         $bound = array_combine(
-            array_map(fn (string $k) => ':' . $k, $columns),
+            array_map(fn(string $k) => ':' . $k, $columns),
             $data
         );
 
@@ -138,7 +138,7 @@ trait DmlOperations
     /**
      * Updates rows in the specified table.
      */
-    public function update(string $table, array $data): self
+    public function update(string $table, array $data): static
     {
         if (empty($data)) {
             throw new \InvalidArgumentException("Cannot update with empty data");
@@ -158,7 +158,7 @@ trait DmlOperations
     /**
      * Deletes rows from the specified table.
      */
-    public function delete(string $table): self
+    public function delete(string $table): static
     {
         $this->parts['custom'] = "DELETE FROM $table";
         return $this;
