@@ -45,17 +45,14 @@ Or add to your `composer.json`:
 ## 🚀 Quick Start
 
 ```php
-use MonkeysLegion\Database\Connection;
+use MonkeysLegion\Database\MySQL\Connection;
 use MonkeysLegion\Query\QueryBuilder;
 
 // Initialize connection
 $conn = new Connection([
-    'driver' => 'mysql',
-    'host' => 'localhost',
-    'database' => 'mydb',
+    'dsn' => 'mysql:host=localhost;dbname=myapp',
     'username' => 'root',
-    'password' => 'secret',
-    'charset' => 'utf8mb4'
+    'password' => 'secret'
 ]);
 
 // Create query builder
@@ -990,12 +987,12 @@ $userRepo = $factory->create(UserRepository::class);
 
 ```php
 // In your DI container config
-use MonkeysLegion\Database\Connection;
+use MonkeysLegion\Database\Factory\ConnectionFactory;
 use MonkeysLegion\Query\QueryBuilder;
 use MonkeysLegion\Repository\RepositoryFactory;
 
 return [
-    Connection::class => fn() => new Connection(require __DIR__.'/database.php'),
+    Connection::class => fn() => ConnectionFactory::create(require __DIR__.'/database.php'),
     
     QueryBuilder::class => fn($c) => new QueryBuilder(
         $c->get(Connection::class)
@@ -1204,15 +1201,14 @@ $params = $qb->getParams();
 ### Enable PDO Error Mode
 
 ```php
+use MonkeysLegion\Database\MySQL\Connection;
 $conn = new Connection([
-    'driver' => 'mysql',
-    'host' => 'localhost',
-    'database' => 'mydb',
+    'dsn' => 'mysql:host=localhost;dbname=myapp',
     'username' => 'root',
     'password' => 'secret',
     'options' => [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]
 ]);
 ```
