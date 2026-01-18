@@ -6,10 +6,10 @@ namespace MonkeysLegion\Query\Traits;
 
 /**
  * Provides SELECT statement operations for the query builder.
- * 
+ *
  * Implements methods for building SELECT queries, specifying columns,
  * and defining table sources.
- * 
+ *
  * @property array $parts Query parts storage including 'select', 'distinct', and 'from'
  */
 trait SelectOperations

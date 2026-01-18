@@ -9,10 +9,10 @@ use PDO;
 
 /**
  * Provides data fetching operations for the query builder.
- * 
+ *
  * Implements methods for retrieving and transforming query results
  * into various formats (objects, arrays, single values).
- * 
+ *
  * @property array $parts Query parts storage
  * @property array $params Query parameters
  * @property \MonkeysLegion\Database\Contracts\ConnectionInterface $conn Database connection

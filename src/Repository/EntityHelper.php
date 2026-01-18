@@ -19,15 +19,19 @@ abstract class EntityHelper
     protected string $table;
     /** @var array<string, string> $tables */
     protected array $tables;
+    /** @var class-string $entityClass */
     protected string $entityClass;
+    /** @var array<string, string> $columnMap */
     protected array $columnMap = [];
     protected HydrationContext $context;
     public QueryBuilder $qb;
 
     // Track original values to detect changes
+    /** @var array<int|string, mixed> $originalValues */
     protected array $originalValues = [];
 
     // cache: tableName => array<string> columns
+    /** @var array<string, array<string>> $tableColumnsCache */
     protected array $tableColumnsCache = [];
 
     protected static array $reservedIdents = [
@@ -56,7 +60,6 @@ abstract class EntityHelper
         }
 
         $idProp = new ReflectionProperty($entity, 'id');
-        $idProp->setAccessible(true);
 
         if (!$idProp->isInitialized($entity)) {
             return;
@@ -125,11 +128,14 @@ abstract class EntityHelper
 
         foreach ($ref->getProperties() as $prop) {
             $attrs = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class);
-            if (!$attrs) continue;
+            if (!$attrs) {
+                continue;
+            }
 
-            $prop->setAccessible(true);
             $val = $prop->getValue($entity);
-            if ($val === null) continue; // relation not set → nothing to enforce
+            if ($val === null) {
+                continue; // relation not set → nothing to enforce
+            }
 
             $col = $this->getRelationColumnName($prop->getName());
             if (!array_key_exists($col, $data)) {
@@ -178,7 +184,9 @@ abstract class EntityHelper
             //    (handles odd naming like list_id, group_id, etc.)
             $needle = preg_replace('/_+/', '', strtolower($key));
             foreach ($colsInTable as $col) {
-                if (!str_ends_with($col, '_id')) continue;
+                if (!str_ends_with($col, '_id')) {
+                    continue;
+                }
                 $colKey = preg_replace('/_+/', '', strtolower($col));
                 if ($colKey === $needle) {
                     unset($out[$key]);
@@ -204,7 +212,9 @@ abstract class EntityHelper
         $ref  = new ReflectionClass($entity);
 
         foreach ($ref->getProperties() as $prop) {
-            if (!$prop->isInitialized($entity)) continue;
+            if (!$prop->isInitialized($entity)) {
+                continue;
+            }
 
             // Handle Field attributes
             if ($prop->getAttributes(Field::class)) {
@@ -214,7 +224,6 @@ abstract class EntityHelper
                 }
 
                 if ($prop->isPrivate() || $prop->isProtected()) {
-                    $prop->setAccessible(true);
                 }
 
                 $data[$prop->getName()] = $prop->getValue($entity);
@@ -224,7 +233,6 @@ abstract class EntityHelper
             $manyToOneAttrs = $prop->getAttributes(ManyToOne::class);
             if ($manyToOneAttrs) {
                 if ($prop->isPrivate() || $prop->isProtected()) {
-                    $prop->setAccessible(true);
                 }
 
                 $relatedEntity = $prop->getValue($entity);
@@ -235,7 +243,6 @@ abstract class EntityHelper
                 } else {
                     // Get the ID of the related entity
                     $idProp = new ReflectionProperty($relatedEntity, 'id');
-                    $idProp->setAccessible(true);
                     $data[$columnName] = $idProp->getValue($relatedEntity);
                 }
             }
@@ -249,7 +256,6 @@ abstract class EntityHelper
                 // Only persist if this is the owning side (no mappedBy)
                 if ($attr->mappedBy === null) {
                     if ($prop->isPrivate() || $prop->isProtected()) {
-                        $prop->setAccessible(true);
                     }
 
                     $relatedEntity = $prop->getValue($entity);
@@ -260,7 +266,6 @@ abstract class EntityHelper
                     } else {
                         // Get the ID of the related entity
                         $idProp = new ReflectionProperty($relatedEntity, 'id');
-                        $idProp->setAccessible(true);
                         $data[$columnName] = $idProp->getValue($relatedEntity);
                     }
                 }
@@ -272,6 +277,7 @@ abstract class EntityHelper
 
     /**
      * Return list of column names for a table (cached).
+     * Supports MySQL, PostgreSQL, and SQLite.
      */
     protected function listTableColumns(string $table): array
     {
@@ -280,19 +286,69 @@ abstract class EntityHelper
         }
 
         $pdo = $this->qb->pdo();
+        $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        $cols = [];
 
-        // Prefer information_schema (works across engines and preserves case)
-        $sql = "SELECT COLUMN_NAME 
-              FROM information_schema.columns 
-             WHERE table_schema = DATABASE() 
-               AND table_name = :t";
-        $stmt = $pdo->prepare($sql);
-        if ($stmt->execute([':t' => $table])) {
-            $cols = array_map(fn($r) => $r['COLUMN_NAME'], $stmt->fetchAll(\PDO::FETCH_ASSOC));
-        } else {
-            // Fallback to DESCRIBE
-            $stmt = $pdo->query("DESCRIBE `{$table}`");
-            $cols = $stmt ? array_map(fn($r) => $r['Field'], $stmt->fetchAll(\PDO::FETCH_ASSOC)) : [];
+        try {
+            switch ($driver) {
+                case 'sqlite':
+                    // SQLite: Use PRAGMA table_info
+                    // Sanitize table name to prevent SQL injection (PRAGMA doesn't support parameters)
+                    $safeTable = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+                    $stmt = $pdo->query("PRAGMA table_info(\"{$safeTable}\")");
+                    if ($stmt) {
+                        $cols = array_map(fn($r) => $r['name'], $stmt->fetchAll(\PDO::FETCH_ASSOC));
+                    }
+                    break;
+
+                case 'pgsql':
+                    // PostgreSQL: Use information_schema with current_database()
+                    $sql = "SELECT column_name 
+                          FROM information_schema.columns 
+                         WHERE table_catalog = current_database() 
+                           AND table_name = :t";
+                    $stmt = $pdo->prepare($sql);
+                    if ($stmt->execute([':t' => $table])) {
+                        $cols = array_map(fn($r) => $r['column_name'], $stmt->fetchAll(\PDO::FETCH_ASSOC));
+                    }
+                    break;
+
+                default:
+                    // MySQL/MariaDB: Use information_schema with DATABASE()
+                    $sql = "SELECT COLUMN_NAME 
+                          FROM information_schema.columns 
+                         WHERE table_schema = DATABASE() 
+                           AND table_name = :t";
+                    $stmt = $pdo->prepare($sql);
+                    if ($stmt->execute([':t' => $table])) {
+                        $cols = array_map(fn($r) => $r['COLUMN_NAME'], $stmt->fetchAll(\PDO::FETCH_ASSOC));
+                    }
+                    break;
+            }
+        } catch (\Throwable $e) {
+            // Fallback strategies
+            if ($driver === 'mysql') {
+                try {
+                    $stmt = $pdo->query("DESCRIBE `{$table}`");
+                    $cols = $stmt ? array_map(fn($r) => $r['Field'], $stmt->fetchAll(\PDO::FETCH_ASSOC)) : [];
+                } catch (\Throwable $e2) {
+                    $cols = [];
+                }
+            } elseif ($driver === 'pgsql') {
+                try {
+                    // PostgreSQL fallback using pg_catalog
+                    $sql = "SELECT a.attname as column_name
+                          FROM pg_catalog.pg_attribute a
+                          JOIN pg_catalog.pg_class c ON a.attrelid = c.oid
+                         WHERE c.relname = :t AND a.attnum > 0 AND NOT a.attisdropped";
+                    $stmt = $pdo->prepare($sql);
+                    if ($stmt->execute([':t' => $table])) {
+                        $cols = array_map(fn($r) => $r['column_name'], $stmt->fetchAll(\PDO::FETCH_ASSOC));
+                    }
+                } catch (\Throwable $e2) {
+                    $cols = [];
+                }
+            }
         }
 
         $this->tableColumnsCache[$table] = $cols ?: [];
@@ -376,7 +432,6 @@ abstract class EntityHelper
     {
         if (property_exists($entity, 'id')) {
             $idProp = new ReflectionProperty($entity, 'id');
-            $idProp->setAccessible(true);
             return $idProp->isInitialized($entity) ? (string) $idProp->getValue($entity) : null;
         }
         return null;
@@ -389,7 +444,6 @@ abstract class EntityHelper
     {
         if (property_exists($entity, $propName)) {
             $prop = new ReflectionProperty($entity, $propName);
-            $prop->setAccessible(true);
             return $prop->isInitialized($entity) ? $prop->getValue($entity) : null;
         }
         return null;
@@ -431,8 +485,11 @@ abstract class EntityHelper
      *  • One-to-One    → same — only on the *inverse* side (mappedBy)
      *  • Many-to-One   → no action required (FK sits on the row we're deleting)
      */
-    protected function cascadeDeleteRelations(string $id): void
+    protected function cascadeDeleteRelations(int|string $id): void
     {
+        // Ensure $id is a string for consistent handling
+        $id = (string) $id;
+
         $rc  = new \ReflectionClass($this->entityClass);
         $pdo = $this->qb->pdo();
 
@@ -674,11 +731,14 @@ abstract class EntityHelper
             // extract id if present
             if (property_exists($value, 'id')) {
                 $rp = new \ReflectionProperty($value, 'id');
-                $rp->setAccessible(true);
                 return $rp->isInitialized($value) ? $rp->getValue($value) : null;
             }
-            // fallback – let PDO try to stringify (not recommended)
-            return (string) $value;
+            // fallback – try to stringify if object has __toString
+            if (method_exists($value, '__toString')) {
+                return (string) $value;
+            }
+            // cannot convert object to string
+            return null;
         }
         return $value;
     }
@@ -723,7 +783,32 @@ abstract class EntityHelper
         }
 
         $rp = new \ReflectionProperty($row, $column);
-        $rp->setAccessible(true);
         return $rp->isInitialized($row) ? $rp->getValue($row) : null;
+    }
+
+    /**
+     * Quote an identifier (table name, column name) for the given database driver.
+     *
+     * @param string $identifier The identifier to quote
+     * @param string|null $driver The database driver (mysql, pgsql, sqlite)
+     * @return string The quoted identifier
+     */
+    protected function quoteIdentifier(string $identifier, ?string $driver = null): string
+    {
+        // Already quoted or an expression — leave as-is
+        if ($identifier === '' || str_contains($identifier, '`') || str_contains($identifier, '"') || strpbrk($identifier, " \t\n\r()")) {
+            return $identifier;
+        }
+
+        // Handle alias.column
+        if (str_contains($identifier, '.')) {
+            [$left, $right] = explode('.', $identifier, 2);
+            return $this->quoteIdentifier($left, $driver) . '.' . $this->quoteIdentifier($right, $driver);
+        }
+
+        return match ($driver) {
+            'pgsql', 'sqlite' => '"' . $identifier . '"',
+            default => '`' . $identifier . '`', // mysql, mariadb
+        };
     }
 }

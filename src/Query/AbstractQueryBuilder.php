@@ -43,7 +43,7 @@ abstract class AbstractQueryBuilder
     protected bool $preflightDone = false;
 
     /**
-     *  @var array<string,string> 
+     *  @var array<string,string>
      * Deterministic mapping first. Extend at bootstrap via setTableMap()
      */
     protected array $tableMap = [
@@ -61,7 +61,9 @@ abstract class AbstractQueryBuilder
      *
      * @param ConnectionInterface $conn Database connection instance.
      */
-    public function __construct(protected ConnectionInterface $conn) {}
+    public function __construct(protected ConnectionInterface $conn)
+    {
+    }
 
     /**
      * Expose the Connection.
@@ -296,7 +298,9 @@ abstract class AbstractQueryBuilder
     {
         $candidates = [];
         foreach ($this->aliasMap as $alias => [$schema, $table]) {
-            if (!$table) continue;
+            if (!$table) {
+                continue;
+            }
 
             // original
             if ($this->columnExists($schema, $table, $column)) {
@@ -469,7 +473,9 @@ abstract class AbstractQueryBuilder
     /** Convert snake_case_id to camelCase_id */
     protected function snakeToCamelId(string $col): string
     {
-        if (!str_ends_with($col, '_id')) return $col;
+        if (!str_ends_with($col, '_id')) {
+            return $col;
+        }
         $base = substr($col, 0, -3); // drop _id
         $parts = explode('_', $base);
         $first = array_shift($parts);
@@ -480,7 +486,9 @@ abstract class AbstractQueryBuilder
     /** Convert camelCase_id to snake_case_id */
     protected function camelToSnakeId(string $col): string
     {
-        if (!str_ends_with($col, '_id')) return $col;
+        if (!str_ends_with($col, '_id')) {
+            return $col;
+        }
         $base = substr($col, 0, -3);
         $snake = strtolower(preg_replace('/([a-z0-9])([A-Z])/', '$1_$2', $base));
         return $snake . '_id';
@@ -535,7 +543,9 @@ abstract class AbstractQueryBuilder
             $aliasRaw = $m[2];
             $colRaw   = $m[4];
             $resolved = $this->resolveColumnForAlias($aliasRaw, $colRaw);
-            if ($resolved === null || $resolved === $colRaw) return $m[0];
+            if ($resolved === null || $resolved === $colRaw) {
+                return $m[0];
+            }
             $aliasToken = ($m[1] ?: '') . $aliasRaw . ($m[1] ?: '');
             return $aliasToken . '.' . $this->quoteIdent($resolved);
         }, $clause);
@@ -545,7 +555,9 @@ abstract class AbstractQueryBuilder
         $clause = preg_replace_callback($reBare, function ($m) use ($qualifyBare) {
             $token = $m[2];
             $match = $this->findAliasForColumn($token);
-            if (!$match) return $m[0];
+            if (!$match) {
+                return $m[0];
+            }
             [$alias, $resolvedCol] = $match;
             return $qualifyBare
                 ? $this->quoteIdent($alias) . '.' . $this->quoteIdent($resolvedCol)

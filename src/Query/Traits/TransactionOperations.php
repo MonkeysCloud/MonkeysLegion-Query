@@ -6,16 +6,15 @@ namespace MonkeysLegion\Query\Traits;
 
 /**
  * Provides database transaction operations for the query builder.
- * 
+ *
  * Implements methods for transaction control with begin, commit,
  * rollback and callback-based transaction wrapping.
- * 
+ *
  * @property \MonkeysLegion\Database\Contracts\ConnectionInterface $conn Database connection
  * @property bool $inTransaction Flag indicating if a transaction is active
  */
 trait TransactionOperations
 {
-
     /**
      * Counter for savepoint nesting level.
      */
@@ -268,10 +267,18 @@ trait TransactionOperations
         try {
             if ($driver === 'mysql') {
                 $stmt = $this->conn->pdo()->query("SELECT @@transaction_isolation");
-                return $stmt->fetchColumn();
+                if ($stmt === false) {
+                    return null;
+                }
+                $result = $stmt->fetchColumn();
+                return $result === false ? null : (string) $result;
             } elseif ($driver === 'pgsql') {
                 $stmt = $this->conn->pdo()->query("SHOW transaction_isolation");
-                return $stmt->fetchColumn();
+                if ($stmt === false) {
+                    return null;
+                }
+                $result = $stmt->fetchColumn();
+                return $result === false ? null : (string) $result;
             }
         } catch (\PDOException $e) {
             error_log("[TransactionOperations] Error getting isolation level: {$e->getMessage()}");

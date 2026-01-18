@@ -14,7 +14,8 @@ class JoinClauseBuilder
         private string $table,
         private string $alias,
         private string $type
-    ) {}
+    ) {
+    }
 
     /**
      * Adds an ON condition.

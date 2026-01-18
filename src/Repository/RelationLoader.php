@@ -15,7 +15,7 @@ abstract class RelationLoader extends EntityHelper
 {
     /**
      * Check if an entity can have deeper relations loaded
-     * 
+     *
      * @param object $entity
      * @return bool
      */
@@ -86,7 +86,7 @@ abstract class RelationLoader extends EntityHelper
             if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
                 /** @var ManyToMany $attr */
                 $attr = $manyToManyAttrs[0]->newInstance();
-                $this->loadManyToManyWithGuard($entity, $prop, $attr, $loadedClasses);
+                $this->loadManyToManyWithGuard($entity, $prop, $attr);
             }
         }
     }
@@ -250,7 +250,7 @@ abstract class RelationLoader extends EntityHelper
 
     /**
      * Load ManyToOne with guard
-     * 
+     *
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param ManyToOne $attr
@@ -281,7 +281,6 @@ abstract class RelationLoader extends EntityHelper
 
         // If FK not present on the object, fetch it minimally by THIS row's ID
         if ($fkValue === null) {
-
             $qb = clone $this->qb;
             $row = $qb->select([$fkColumn])
                 ->from($this->tableOf(get_class($entity)))
@@ -363,7 +362,7 @@ abstract class RelationLoader extends EntityHelper
 
     /**
      * Load OneToOne with guard
-     * 
+     *
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param OneToOne $attr
@@ -380,7 +379,7 @@ abstract class RelationLoader extends EntityHelper
 
     /**
      * Load OneToMany with guard
-     * 
+     *
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param OneToMany $attr
@@ -426,10 +425,15 @@ abstract class RelationLoader extends EntityHelper
 
         foreach ($rows as $row) {
             $rowId = $this->getEntityId($row);
-            if (!$rowId) continue;
+            if (!$rowId) {
+                continue;
+            }
 
             if ($this->context->hasInstance($targetClass, $rowId)) {
                 $instance = $this->context->getInstance($targetClass, $rowId);
+                if ($instance === null) {
+                    continue;
+                }
                 $dedup[] = $instance;
 
                 // Update depth if new path is shorter
@@ -459,15 +463,15 @@ abstract class RelationLoader extends EntityHelper
 
     /**
      * Load ManyToMany with guard
-     * 
+     *
      * @param object $entity
      * @param ReflectionProperty $prop
      * @param ManyToMany $attr
      */
     protected function loadManyToManyWithGuard(
-        object             $entity,
+        object $entity,
         ReflectionProperty $prop,
-        ManyToMany         $attr,
+        ManyToMany $attr,
     ): void {
         $currEntityDepth = $this->context->getDepth($entity);
 
@@ -505,10 +509,15 @@ abstract class RelationLoader extends EntityHelper
 
         foreach ($rows as $row) {
             $rowId = $this->getEntityId($row);
-            if (!$rowId) continue;
+            if (!$rowId) {
+                continue;
+            }
 
             if ($this->context->hasInstance($targetClass, $rowId)) {
                 $instance = $this->context->getInstance($targetClass, $rowId);
+                if ($instance === null) {
+                    continue;
+                }
                 $dedup[] = $instance;
 
                 // Update depth if new path is shorter
@@ -669,11 +678,16 @@ abstract class RelationLoader extends EntityHelper
         $newDepth = $currEntityDepth + 1;
         foreach ($related as $rel) {
             $relId = $this->getEntityId($rel);
-            if ($relId === null) continue;
+            if ($relId === null) {
+                continue;
+            }
 
             // Check if we already have this instance
             if ($this->context->hasInstance($attr->targetEntity, $relId)) {
                 $instance = $this->context->getInstance($attr->targetEntity, $relId);
+                if ($instance === null) {
+                    continue;
+                }
                 $existingDepth = $this->context->getDepth($instance);
 
                 // If we found a shorter path, update depth and reload relations
@@ -701,7 +715,9 @@ abstract class RelationLoader extends EntityHelper
     protected function loadOneToOne(object $entity, ReflectionProperty $prop, OneToOne $attr): void
     {
         $currEntityDepth = $this->context->getDepth($entity);
-        if ($currEntityDepth >= $this->context->maxDepth) return;
+        if ($currEntityDepth >= $this->context->maxDepth) {
+            return;
+        }
 
         // Same as ManyToOne for owning side
         $this->loadManyToOne($entity, $prop, new ManyToOne(
@@ -717,7 +733,9 @@ abstract class RelationLoader extends EntityHelper
     protected function isPropertyNullable(ReflectionProperty $prop): bool
     {
         $type = $prop->getType();
-        if (!$type) return true; // No type hint = nullable
+        if (!$type) {
+            return true; // No type hint = nullable
+        }
 
         if ($type instanceof \ReflectionUnionType) {
             foreach ($type->getTypes() as $unionType) {
@@ -740,7 +758,6 @@ abstract class RelationLoader extends EntityHelper
      */
     protected function safeSetProperty(ReflectionProperty $prop, object $entity, mixed $value): void
     {
-        $prop->setAccessible(true);
 
         if ($value === null && !$this->isPropertyNullable($prop)) {
             // Don't set non-nullable properties to null - leave them uninitialized
