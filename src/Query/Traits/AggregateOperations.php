@@ -8,9 +8,9 @@ use PDO;
 
 /**
  * Provides SQL aggregate function operations for the query builder.
- * 
+ *
  * Implements methods for COUNT, SUM, AVG, MIN, MAX and row existence check.
- * 
+ *
  * @property array $parts Query parts storage
  * @property array $params Query parameters
  * @property \MonkeysLegion\Database\Contracts\ConnectionInterface $conn Database connection

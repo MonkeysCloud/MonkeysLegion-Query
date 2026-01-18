@@ -6,10 +6,10 @@ namespace MonkeysLegion\Query\Traits;
 
 /**
  * Provides WHERE clause operations for the query builder.
- * 
+ *
  * Implements methods for building SQL WHERE clauses with support for
  * conditions, grouping, and complex expressions.
- * 
+ *
  * @property array $parts Query parts storage including 'where' array
  * @property array $params Query parameters
  * @property int $counter Parameter counter for generating unique placeholders

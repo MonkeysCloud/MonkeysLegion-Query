@@ -6,7 +6,7 @@ namespace MonkeysLegion\Query\Traits;
 
 /**
  * Provides database identifier parsing and quoting functionality.
- * 
+ *
  * Handles proper parsing and escaping of table and column identifiers
  * including support for schema-qualified names.
  */
@@ -45,7 +45,7 @@ trait Identifier
             : $this->quoteIdent($table);
     }
 
-    /** 
+    /**
      * Parse "schema.table" or "table" (with/without backticks).
      */
     protected function parseQualifiedRef(string $ref): array
@@ -125,9 +125,12 @@ trait Identifier
         $ref = trim($ref);
 
         // Remove backticks/quotes for parsing
-        $ref = preg_replace('/[`"\[\]]/', '', $ref);
+        $cleaned = preg_replace('/[`"\[\]]/', '', $ref);
+        if ($cleaned === null) {
+            return [null, null, $ref];
+        }
 
-        $parts = explode('.', $ref);
+        $parts = explode('.', $cleaned);
         $count = count($parts);
 
         return match ($count) {
@@ -391,7 +394,7 @@ trait Identifier
      */
     public function isFunction(string $ref): bool
     {
-        return preg_match('/^[A-Z_][A-Z0-9_]*\s*\(/i', trim($ref));
+        return (bool) preg_match('/^[A-Z_][A-Z0-9_]*\s*\(/i', trim($ref));
     }
 
     /**
@@ -427,6 +430,9 @@ trait Identifier
     {
         // This is a simplified version - complex expressions need more sophisticated parsing
         $tokens = preg_split('/(\s+|,|\(|\)|=|<|>|!|\+|-|\*|\/|\||&)/', $expression, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
+        if ($tokens === false) {
+            return $expression;
+        }
 
         $result = [];
         foreach ($tokens as $token) {
@@ -490,6 +496,9 @@ trait Identifier
     {
         // Remove dangerous characters
         $sanitized = preg_replace('/[^\w]/', '_', $ident);
+        if ($sanitized === null) {
+            $sanitized = $ident;
+        }
 
         // Ensure it starts with letter or underscore
         if (preg_match('/^[0-9]/', $sanitized)) {

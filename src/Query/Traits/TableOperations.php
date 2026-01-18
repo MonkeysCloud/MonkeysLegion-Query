@@ -9,21 +9,25 @@ use PDO;
 
 /**
  * Provides table management operations for the query builder.
- * 
+ *
  * Implements methods for managing table name mappings and
  * duplicating query builder instances.
- * 
+ *
  * @property array $tableMap Table name mapping for plural/singular forms
  * @property array $parts Query parts storage
  * @property array $params Query parameters
  * @property int $counter Parameter counter
  * @property ConnectionInterface $conn Database connection
+ * @method array deepCopyArray(array $array) Deep copy an array (from ArrayCopy trait)
+ * @method static from(string $table, ?string $alias = null) Set FROM table (from SelectOperations trait)
+ * @method string toSql() Build SQL string (from AbstractQueryBuilder)
+ * @method \PDO pdo() Get PDO connection
  */
 trait TableOperations
 {
     /**
      * Sets the table name mapping.
-     * 
+     *
      * @param array $map New table name mapping
      * @return void
      */

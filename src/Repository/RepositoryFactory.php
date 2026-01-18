@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Repository;
@@ -7,7 +8,9 @@ use MonkeysLegion\Query\QueryBuilder;
 
 final class RepositoryFactory
 {
-    public function __construct(private QueryBuilder $qb) {}
+    public function __construct(private QueryBuilder $qb)
+    {
+    }
 
     /**
      * @template T of EntityRepository
@@ -33,7 +36,7 @@ final class RepositoryFactory
      */
     public function getRepository(string $entityClass): EntityRepository
     {
-        return new class($this->qb, $entityClass) extends EntityRepository {
+        return new class ($this->qb, $entityClass) extends EntityRepository {
             public function __construct(QueryBuilder $qb, string $entityClass)
             {
                 parent::__construct($qb);
@@ -52,5 +55,4 @@ final class RepositoryFactory
             }
         };
     }
-
 }

@@ -6,10 +6,10 @@ namespace MonkeysLegion\Query\Traits;
 
 /**
  * Provides ordering, grouping, and pagination operations for the query builder.
- * 
+ *
  * Implements methods for GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET,
  * pagination, and UNION operations.
- * 
+ *
  * @property array $parts Query parts storage including 'groupBy', 'having', 'orderBy', 'limit', 'offset', 'unions'
  * @property array $params Query parameters
  * @property int $counter Parameter counter for generating unique placeholders

@@ -8,11 +8,11 @@ use MonkeysLegion\Entity\Utils\Uuid;
 
 /**
  * Provides Data Manipulation Language (DML) operations for the query builder.
- * 
- * Implements methods for INSERT, UPDATE, DELETE operations and 
+ *
+ * Implements methods for INSERT, UPDATE, DELETE operations and
  * custom SQL execution.
- * 
- * @property array $parts Query parts storage including 'custom' 
+ *
+ * @property array $parts Query parts storage including 'custom'
  * @property array $params Query parameters
  * @property \MonkeysLegion\Database\Contracts\ConnectionInterface $conn Database connection
  */
@@ -81,14 +81,14 @@ trait DmlOperations
 
         $this->reset();
 
-        if ($id === '' || $id === '0') {
+        if ($id === '' || $id === '0' || $id === false) {
             // No meaningful lastInsertId (e.g. no PK / some drivers)
             // You *could* return 0 or throw; for now, return 0 as int.
             return 0;
         }
 
         // If it's a valid UUID, return as string; otherwise cast to int.
-        if (Uuid::isValid($id)) {
+        if (is_string($id) && Uuid::isValid($id)) {
             return $id;
         }
 
@@ -187,6 +187,7 @@ trait DmlOperations
      */
     public function executeRaw(string $sql): int
     {
-        return $this->pdo()->exec($sql);
+        $result = $this->pdo()->exec($sql);
+        return $result === false ? 0 : $result;
     }
 }

@@ -8,10 +8,10 @@ use MonkeysLegion\Query\JoinClauseBuilder;
 
 /**
  * Provides JOIN clause operations for the query builder.
- * 
+ *
  * Implements methods for building SQL JOIN clauses with support for
  * inner, left, and right joins.
- * 
+ *
  * @property array $parts Query parts storage including 'joins' array
  */
 trait JoinOperations

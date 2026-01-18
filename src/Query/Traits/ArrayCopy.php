@@ -6,7 +6,7 @@ namespace MonkeysLegion\Query\Traits;
 
 /**
  * Provides deep array copying functionality.
- * 
+ *
  * Used for creating independent copies of query builder state.
  */
 trait ArrayCopy
@@ -225,7 +225,7 @@ trait ArrayCopy
      */
     public function deepCopySerializable(array $array): array
     {
-        return $this->deepCopyWithTransform($array, function($value, $key) {
+        return $this->deepCopyWithTransform($array, function ($value, $key) {
             if (is_object($value)) {
                 // Convert objects to arrays for serialization
                 return (array) $value;
@@ -240,7 +240,7 @@ trait ArrayCopy
      */
     public function deepCopyJsonSafe(array $array): array
     {
-        return $this->deepCopyWithTransform($array, function($value, $key) {
+        return $this->deepCopyWithTransform($array, function ($value, $key) {
             if (is_object($value)) {
                 if (method_exists($value, 'toArray')) {
                     return $value->toArray();
@@ -371,7 +371,12 @@ trait ArrayCopy
      */
     public function copyViaJson(array $array): array
     {
-        return json_decode(json_encode($array), true);
+        $encoded = json_encode($array);
+        if ($encoded === false) {
+            return $array;
+        }
+        $decoded = json_decode($encoded, true);
+        return is_array($decoded) ? $decoded : $array;
     }
 
     /**
@@ -410,7 +415,7 @@ trait ArrayCopy
      */
     public function deepCopyTyped(array $array, array $allowedTypes): array
     {
-        return $this->deepCopyWithValidation($array, function($value, $key) use ($allowedTypes) {
+        return $this->deepCopyWithValidation($array, function ($value, $key) use ($allowedTypes) {
             $type = gettype($value);
 
             if (is_object($value)) {
@@ -463,11 +468,15 @@ trait ArrayCopy
         $result = [];
 
         foreach ($array as $key => $value) {
-            $keys = explode($separator, $key);
+            if ($separator === '') {
+                $result[$key] = $value;
+                continue;
+            }
+            $keys = explode($separator, (string) $key);
             $temp = &$result;
 
             foreach ($keys as $k) {
-                if (!isset($temp[$k])) {
+                if (!isset($temp[$k]) || !is_array($temp[$k])) {
                     $temp[$k] = [];
                 }
                 $temp = &$temp[$k];
