@@ -623,9 +623,11 @@ abstract class EntityRepository extends RelationLoader
             }
             $setParts = [];
             foreach ($data as $col => $_) {
-                $setParts[] = "`{$col}` = :{$col}";
+                $setParts[] = $this->quoteIdentifier($col, $driver) . " = :{$col}";
             }
-            $sql = "UPDATE `{$this->table}` SET " . implode(', ', $setParts) . " WHERE `id` = :_id";
+            $tableName = $this->quoteIdentifier($this->table, $driver);
+            $idColumn = $this->quoteIdentifier('id', $driver);
+            $sql = "UPDATE {$tableName} SET " . implode(', ', $setParts) . " WHERE {$idColumn} = :_id";
             try {
                 $stmt = $pdo->prepare($sql);
                 foreach ($data as $col => $val) {
@@ -701,13 +703,19 @@ abstract class EntityRepository extends RelationLoader
                     }
                     break;
                 case 'sqlite':
-                    // SQLite: Use INSERT OR REPLACE (simpler approach)
-                    $sql = str_replace('INSERT INTO', 'INSERT OR REPLACE INTO', $sql);
+                    // SQLite: Use ON CONFLICT to preserve the ID (INSERT OR REPLACE would delete+insert)
+                    $conflictCols = implode(',', array_map(fn($c) => $this->quoteIdentifier($c, $driver), $chosenUnique['cols']));
+                    $sql .= " ON CONFLICT ({$conflictCols}) DO UPDATE SET id = excluded.id";
+                    if (in_array('subscribed_at', $cols, true)) {
+                        $sql .= ", subscribed_at = excluded.subscribed_at";
+                    }
                     break;
                 default: // mysql
-                    $sql .= " ON DUPLICATE KEY UPDATE `id` = LAST_INSERT_ID(`id`)";
+                    $quotedId = $this->quoteIdentifier('id', $driver);
+                    $sql .= " ON DUPLICATE KEY UPDATE {$quotedId} = LAST_INSERT_ID({$quotedId})";
                     if (in_array('subscribed_at', $cols, true)) {
-                        $sql .= ", `subscribed_at` = VALUES(`subscribed_at`)";
+                        $quotedSubscribedAt = $this->quoteIdentifier('subscribed_at', $driver);
+                        $sql .= ", {$quotedSubscribedAt} = VALUES({$quotedSubscribedAt})";
                     }
                     break;
             }
@@ -897,7 +905,10 @@ abstract class EntityRepository extends RelationLoader
             // ② hard-delete the entity with plain PDO
             // Note: Using standard DELETE syntax without LIMIT for broader DB compatibility
             $pdo = $this->qb->pdo();
-            $sql = "DELETE FROM `{$this->table}` WHERE `id` = ?";
+            $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            $tableName = $this->quoteIdentifier($this->table, $driver);
+            $idColumn = $this->quoteIdentifier('id', $driver);
+            $sql = "DELETE FROM {$tableName} WHERE {$idColumn} = ?";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([$id]);
             return $stmt->rowCount();
@@ -1121,14 +1132,17 @@ abstract class EntityRepository extends RelationLoader
             // Get current IDs in the join table (normalize to strings)
             $currentIds = [];
             try {
-                $pdo = (clone $this->qb)->pdo();
-                $stmt = $pdo->query("SELECT `$invCol` FROM `$joinTable` WHERE `$ownCol` = " . (int)$entityId);
-                if ($stmt !== false) {
-                    $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-                    foreach ($rows as $row) {
-                        if (isset($row[$invCol])) {
-                            $currentIds[] = (string) $row[$invCol];
-                        }
+                // Use QueryBuilder for proper identifier quoting and parameter binding
+                $rows = (clone $this->qb)
+                    ->select([$invCol])
+                    ->from($joinTable)
+                    ->where($ownCol, '=', $entityId)
+                    ->fetchAll();
+                foreach ($rows as $row) {
+                    // Handle both object and array access patterns
+                    $value = is_object($row) ? ($row->$invCol ?? null) : ($row[$invCol] ?? null);
+                    if ($value !== null) {
+                        $currentIds[] = (string) $value;
                     }
                 }
             } catch (\Throwable $e) {

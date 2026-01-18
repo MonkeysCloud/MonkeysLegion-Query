@@ -293,7 +293,9 @@ abstract class EntityHelper
             switch ($driver) {
                 case 'sqlite':
                     // SQLite: Use PRAGMA table_info
-                    $stmt = $pdo->query("PRAGMA table_info(\"{$table}\")");
+                    // Sanitize table name to prevent SQL injection (PRAGMA doesn't support parameters)
+                    $safeTable = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+                    $stmt = $pdo->query("PRAGMA table_info(\"{$safeTable}\")");
                     if ($stmt) {
                         $cols = array_map(fn($r) => $r['name'], $stmt->fetchAll(\PDO::FETCH_ASSOC));
                     }
