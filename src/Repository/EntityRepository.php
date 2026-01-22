@@ -1109,12 +1109,17 @@ abstract class EntityRepository extends RelationLoader
                 continue;
             }
 
+            // Normalize traversable collections to arrays to avoid consuming iterators multiple times
+            if ($collection instanceof \Traversable) {
+                $collection = iterator_to_array($collection, false);
+            }
+
             // SAFETY: Only sync if:
             // 1. Collection is non-empty (explicit intent to have relations), OR
             // 2. Entity has stored original values (was properly loaded with find($id, true))
             // This prevents accidental deletion when saving an entity loaded without relations
             $hasOriginalValues = isset($this->originalValues[spl_object_id($entity)]);
-            $collectionIsEmpty = is_array($collection) ? count($collection) === 0 : !iterator_count($collection);
+            $collectionIsEmpty = count($collection) === 0;
             
             if ($collectionIsEmpty && !$hasOriginalValues) {
                 // Skip sync - entity appears to be loaded without relations
