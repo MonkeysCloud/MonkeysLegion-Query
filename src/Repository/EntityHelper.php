@@ -329,14 +329,11 @@ abstract class EntityHelper
             // Fallback strategies
             if ($driver === 'mysql') {
                 try {
-                    // Validate table name to avoid SQL injection in DESCRIBE fallback
-                    if (preg_match('/^[A-Za-z0-9_]+$/', $table)) {
-                        $safeTable = str_replace('`', '``', $table);
-                        $stmt = $pdo->query("DESCRIBE `{$safeTable}`");
-                        $cols = $stmt ? array_map(fn($r) => $r['Field'], $stmt->fetchAll(\PDO::FETCH_ASSOC)) : [];
-                    } else {
-                        $cols = [];
-                    }
+                    // Escape backticks by doubling them - this is sufficient to prevent SQL injection
+                    // in backtick-quoted identifiers since backticks are the only escape character
+                    $safeTable = str_replace('`', '``', $table);
+                    $stmt = $pdo->query("DESCRIBE `{$safeTable}`");
+                    $cols = $stmt ? array_map(fn($r) => $r['Field'], $stmt->fetchAll(\PDO::FETCH_ASSOC)) : [];
                 } catch (\Throwable $e2) {
                     $cols = [];
                 }
