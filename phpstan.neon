@@ -36,6 +36,7 @@ parameters:
         # PHPDoc types treated as certain
         - '#function is_subclass_of\(\).+will always evaluate to true#'
         - '#Because the type is coming from a PHPDoc#'
+        - '#Call to function is_string\(\) with .+ will always evaluate to true#'
         
         # Argument count in optional parameter methods
         - '#invoked with \d+ parameters, \d+ required#'
@@ -66,5 +67,4 @@ parameters:
         # Return type covariance (int vs int|string)
         - '#should return int but returns int\|string#'
     
-    treatPhpDocTypesAsCertain: false
     reportUnmatchedIgnoredErrors: false

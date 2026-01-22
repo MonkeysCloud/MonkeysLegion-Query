@@ -329,8 +329,14 @@ abstract class EntityHelper
             // Fallback strategies
             if ($driver === 'mysql') {
                 try {
-                    $stmt = $pdo->query("DESCRIBE `{$table}`");
-                    $cols = $stmt ? array_map(fn($r) => $r['Field'], $stmt->fetchAll(\PDO::FETCH_ASSOC)) : [];
+                    // Validate table name to avoid SQL injection in DESCRIBE fallback
+                    if (preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+                        $safeTable = str_replace('`', '``', $table);
+                        $stmt = $pdo->query("DESCRIBE `{$safeTable}`");
+                        $cols = $stmt ? array_map(fn($r) => $r['Field'], $stmt->fetchAll(\PDO::FETCH_ASSOC)) : [];
+                    } else {
+                        $cols = [];
+                    }
                 } catch (\Throwable $e2) {
                     $cols = [];
                 }
