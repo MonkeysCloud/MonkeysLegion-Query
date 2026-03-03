@@ -454,12 +454,13 @@ abstract class AbstractQueryBuilder
             }
 
             if ($driver === 'pgsql') {
-                // PostgreSQL: use table_catalog + current_database()
+                // PostgreSQL: filter by table_schema (schema) and pin to current database
                 $sql = "SELECT 1
                       FROM information_schema.columns
                      WHERE table_name = :t
                        AND column_name = :c
-                       AND table_catalog = COALESCE(:s, current_database())
+                       AND table_schema = COALESCE(:s, current_schema())
+                       AND table_catalog = current_database()
                      LIMIT 1";
             } else {
                 // MySQL / MariaDB
