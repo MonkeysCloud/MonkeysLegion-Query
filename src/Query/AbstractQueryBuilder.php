@@ -16,18 +16,18 @@ abstract class AbstractQueryBuilder
 
     /** @var array<string,mixed> */
     protected array $parts = [
-        'select'   => '*',
+        'select' => '*',
         'distinct' => false,
-        'from'     => '',
-        'joins'    => [],
-        'where'    => [],
-        'groupBy'  => [],
-        'having'   => [],
-        'orderBy'  => [],
-        'limit'    => null,
-        'offset'   => null,
-        'custom'   => null,
-        'unions'   => [],
+        'from' => '',
+        'joins' => [],
+        'where' => [],
+        'groupBy' => [],
+        'having' => [],
+        'orderBy' => [],
+        'limit' => null,
+        'offset' => null,
+        'custom' => null,
+        'unions' => [],
     ];
 
     /** @var array<string,mixed> */
@@ -161,7 +161,7 @@ abstract class AbstractQueryBuilder
     {
         $sql = $this->toSql();
         foreach ($this->params as $key => $value) {
-            $quotedValue = is_numeric($value) ? $value : "'" . addslashes((string)$value) . "'";
+            $quotedValue = is_numeric($value) ? $value : "'" . addslashes((string) $value) . "'";
             $sql = str_replace($key, $quotedValue, $sql);
         }
         return $sql;
@@ -182,7 +182,7 @@ abstract class AbstractQueryBuilder
 
             $reFrom = '/^\s*((?:`?\w+`?\.)?`?\w+`?)\s*(?:AS\s+|\s+)?(`?\w+`?)?\s*$/i';
             if (preg_match($reFrom, $raw, $m)) {
-                $ref   = $m[1];
+                $ref = $m[1];
                 $alias = isset($m[2]) ? $m[2] : '';
 
                 [$schema, $table] = $this->parseQualifiedRef($ref);
@@ -213,12 +213,12 @@ abstract class AbstractQueryBuilder
                     '(\s+(?:ON|USING)\b)/i';                 // 3: " ON" or " USING"
 
                 $joinStr = preg_replace_callback($reJoin, function ($mm) {
-                    $ref        = $mm[1];
+                    $ref = $mm[1];
                     $aliasChunk = isset($mm[2]) ? (' ' . $mm[2]) : '';
-                    $afterKW    = $mm[3];
+                    $afterKW = $mm[3];
 
                     [$schema, $table] = $this->parseQualifiedRef($ref);
-                    $resolved  = $this->mapOrResolve($table);
+                    $resolved = $this->mapOrResolve($table);
                     $qualified = 'JOIN ' . $this->quoteQualified($schema, $resolved) . $aliasChunk . $afterKW;
 
                     // Record alias mapping if present
@@ -453,13 +453,24 @@ abstract class AbstractQueryBuilder
                 return $this->columnExistsCache[$key] = $exists;
             }
 
-            // MySQL / MariaDB
-            $sql = "SELECT 1
-                  FROM information_schema.columns
-                 WHERE table_name = :t
-                   AND column_name = :c
-                   AND table_schema = COALESCE(:s, DATABASE())
-                 LIMIT 1";
+            if ($driver === 'pgsql') {
+                // PostgreSQL: use table_catalog + current_database()
+                $sql = "SELECT 1
+                      FROM information_schema.columns
+                     WHERE table_name = :t
+                       AND column_name = :c
+                       AND table_catalog = COALESCE(:s, current_database())
+                     LIMIT 1";
+            } else {
+                // MySQL / MariaDB
+                $sql = "SELECT 1
+                      FROM information_schema.columns
+                     WHERE table_name = :t
+                       AND column_name = :c
+                       AND table_schema = COALESCE(:s, DATABASE())
+                     LIMIT 1";
+            }
+
             $stmt = $this->conn->pdo()->prepare($sql);
             $stmt->execute([':t' => $table, ':c' => $column, ':s' => $schema]);
             $exists = (bool) $stmt->fetchColumn();
@@ -541,7 +552,7 @@ abstract class AbstractQueryBuilder
         $reAliased = '/(?<![\w`])(`?)([A-Za-z0-9_]+)\1\.(\`?)([A-Za-z0-9_]+)\3(?![\w`])/';
         $clause = preg_replace_callback($reAliased, function ($m) {
             $aliasRaw = $m[2];
-            $colRaw   = $m[4];
+            $colRaw = $m[4];
             $resolved = $this->resolveColumnForAlias($aliasRaw, $colRaw);
             if ($resolved === null || $resolved === $colRaw) {
                 return $m[0];

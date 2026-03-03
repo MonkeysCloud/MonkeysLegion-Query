@@ -495,6 +495,7 @@ abstract class EntityHelper
 
         $rc  = new \ReflectionClass($this->entityClass);
         $pdo = $this->qb->pdo();
+        $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
         foreach ($rc->getProperties() as $prop) {
             $propName = $prop->getName();
@@ -503,7 +504,7 @@ abstract class EntityHelper
             if ($prop->getAttributes(ManyToMany::class)) {
                 try {
                     [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
-                    $sql  = "DELETE FROM `{$jt}` WHERE `{$ownCol}` = ? OR `{$invCol}` = ?";
+                    $sql  = "DELETE FROM {$this->quoteIdentifier($jt, $driver)} WHERE {$this->quoteIdentifier($ownCol, $driver)} = ? OR {$this->quoteIdentifier($invCol, $driver)} = ?";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute([$id, $id]);
                 } catch (\Throwable $e) {
@@ -522,7 +523,7 @@ abstract class EntityHelper
                     $tbl = $this->tableOf($meta->targetEntity);
                     $fk  = $this->getRelationColumnName($meta->mappedBy, $tbl);
 
-                    $sql  = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
+                    $sql  = "UPDATE {$this->quoteIdentifier($tbl, $driver)} SET {$this->quoteIdentifier($fk, $driver)} = NULL WHERE {$this->quoteIdentifier($fk, $driver)} = ?";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute([$id]);
                 } catch (\Throwable $e) {
@@ -543,7 +544,7 @@ abstract class EntityHelper
                         $tbl = $this->tableOf($meta->targetEntity);
                         $fk  = $this->getRelationColumnName($meta->mappedBy, $tbl);
 
-                        $sql  = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
+                        $sql  = "UPDATE {$this->quoteIdentifier($tbl, $driver)} SET {$this->quoteIdentifier($fk, $driver)} = NULL WHERE {$this->quoteIdentifier($fk, $driver)} = ?";
                         $stmt = $pdo->prepare($sql);
                         $stmt->execute([$id]);
                     } else {
@@ -706,7 +707,7 @@ abstract class EntityHelper
     protected function quoteIfReserved(string $ident): string
     {
         // already quoted or an expression — leave as-is
-        if ($ident === '' || str_contains($ident, '`') || strpbrk($ident, " \t\n\r()")) {
+        if ($ident === '' || str_contains($ident, '`') || str_contains($ident, '"') || strpbrk($ident, " \t\n\r()")) {
             return $ident;
         }
 
@@ -718,7 +719,11 @@ abstract class EntityHelper
 
         // simple identifier: quote if in reserved set
         if (in_array(strtolower($ident), self::$reservedIdents, true)) {
-            return '`' . $ident . '`';
+            $driver = $this->qb->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            return match ($driver) {
+                'pgsql', 'sqlite' => '"' . $ident . '"',
+                default => '`' . $ident . '`',
+            };
         }
         return $ident;
     }

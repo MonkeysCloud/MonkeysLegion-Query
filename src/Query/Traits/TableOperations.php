@@ -265,18 +265,18 @@ trait TableOperations
     public function reset(): static
     {
         $this->parts = [
-            'select'   => '*',
+            'select' => '*',
             'distinct' => false,
-            'from'     => '',
-            'joins'    => [],
-            'where'    => [],
-            'groupBy'  => [],
-            'having'   => [],
-            'orderBy'  => [],
-            'limit'    => null,
-            'offset'   => null,
-            'custom'   => null,
-            'unions'   => [],
+            'from' => '',
+            'joins' => [],
+            'where' => [],
+            'groupBy' => [],
+            'having' => [],
+            'orderBy' => [],
+            'limit' => null,
+            'offset' => null,
+            'custom' => null,
+            'unions' => [],
         ];
         $this->params = [];
         $this->counter = 0;
@@ -347,6 +347,7 @@ trait TableOperations
 
     /**
      * Checks if a table exists in the database.
+     * Supports MySQL, PostgreSQL, and SQLite.
      */
     public function tableExists(string $table, ?string $schema = null): bool
     {
@@ -360,12 +361,22 @@ trait TableOperations
                 return (bool) $stmt->fetchColumn();
             }
 
-            // MySQL / MariaDB
-            $sql = "SELECT 1
-              FROM information_schema.tables
-             WHERE table_name = :t
-               AND table_schema = COALESCE(:s, DATABASE())
-             LIMIT 1";
+            if ($driver === 'pgsql') {
+                // PostgreSQL: use current_schema() for schema fallback
+                $sql = "SELECT 1
+                  FROM information_schema.tables
+                 WHERE table_name = :t
+                   AND table_schema = COALESCE(:s, current_schema())
+                 LIMIT 1";
+            } else {
+                // MySQL / MariaDB: use DATABASE() for schema fallback
+                $sql = "SELECT 1
+                  FROM information_schema.tables
+                 WHERE table_name = :t
+                   AND table_schema = COALESCE(:s, DATABASE())
+                 LIMIT 1";
+            }
+
             $stmt = $this->conn->pdo()->prepare($sql);
             $stmt->execute([':t' => $table, ':s' => $schema]);
             return (bool) $stmt->fetchColumn();
