@@ -239,7 +239,10 @@ abstract class EntityHelper
                 $columnName = $this->getRelationColumnName($prop->getName());
 
                 if ($relatedEntity === null) {
-                    $data[$columnName] = null;
+                    // Only set to null if not already set by a #[Field] attribute
+                    if (!array_key_exists($columnName, $data)) {
+                        $data[$columnName] = null;
+                    }
                 } else {
                     // Get the ID of the related entity
                     $idProp = new ReflectionProperty($relatedEntity, 'id');
