@@ -87,10 +87,12 @@ abstract class AbstractQueryBuilder
     /**
      * Get the database driver name with robust detection.
      *
-     * Uses multiple strategies:
+     * Uses multiple strategies, in order:
      *   1) PDO::ATTR_DRIVER_NAME attribute
      *   2) DSN prefix parsing (e.g. "pgsql:", "mysql:", "sqlite:")
      *   3) Connection class name introspection (e.g. PostgreSQL\Connection)
+     *   4) Runtime probe via a lightweight SQL query (e.g. "SELECT current_database()")
+     *   5) Final conservative fallback if all other strategies fail
      *
      * The result is cached for the lifetime of this QueryBuilder instance.
      */
@@ -146,8 +148,10 @@ abstract class AbstractQueryBuilder
 
         // Strategy 4: Try executing a PostgreSQL-specific function to detect
         try {
-            $pdo->query('SELECT current_database()');
-            return $this->driverNameCache = 'pgsql';
+            $result = $pdo->query('SELECT current_database()');
+            if ($result !== false) {
+                return $this->driverNameCache = 'pgsql';
+            }
         } catch (\Throwable) {
             // Not PostgreSQL
         }
