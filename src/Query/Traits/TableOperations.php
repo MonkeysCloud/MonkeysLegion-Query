@@ -352,7 +352,7 @@ trait TableOperations
     public function tableExists(string $table, ?string $schema = null): bool
     {
         try {
-            $driver = $this->pdo()->getAttribute(PDO::ATTR_DRIVER_NAME);
+            $driver = $this->getDriverName();
 
             if ($driver === 'sqlite') {
                 $sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = :t";
@@ -396,7 +396,7 @@ trait TableOperations
 
         try {
             $pdo = $this->conn->pdo();
-            $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            $driver = $this->getDriverName();
 
             if ($driver === 'mysql') {
                 $stmt = $pdo->prepare("DESCRIBE `$table`");
@@ -433,7 +433,7 @@ trait TableOperations
 
         try {
             $pdo = $this->conn->pdo();
-            $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            $driver = $this->getDriverName();
 
             if ($driver === 'mysql') {
                 $stmt = $pdo->prepare("DESCRIBE `$table`");

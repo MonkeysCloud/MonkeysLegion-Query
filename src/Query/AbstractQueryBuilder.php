@@ -81,6 +81,81 @@ abstract class AbstractQueryBuilder
         return $this->conn->pdo();
     }
 
+    /** @var string|null Cached driver name */
+    private ?string $driverNameCache = null;
+
+    /**
+     * Get the database driver name with robust detection.
+     *
+     * Uses multiple strategies:
+     *   1) PDO::ATTR_DRIVER_NAME attribute
+     *   2) DSN prefix parsing (e.g. "pgsql:", "mysql:", "sqlite:")
+     *   3) Connection class name introspection (e.g. PostgreSQL\Connection)
+     *
+     * The result is cached for the lifetime of this QueryBuilder instance.
+     */
+    public function getDriverName(): string
+    {
+        if ($this->driverNameCache !== null) {
+            return $this->driverNameCache;
+        }
+
+        $pdo = $this->conn->pdo();
+
+        // Strategy 1: PDO attribute (most reliable when available)
+        try {
+            $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            if (is_string($driver) && $driver !== '') {
+                return $this->driverNameCache = strtolower($driver);
+            }
+        } catch (\Throwable) {
+            // Some drivers may not support this attribute
+        }
+
+        // Strategy 2: Parse DSN prefix from the connection string
+        try {
+            // PDO::getAttribute with DSN-related constants isn't universal,
+            // so introspect the connection class config or DSN if available
+            $connClass = get_class($this->conn);
+
+            // Check if the connection class has a getDsn() method
+            if (method_exists($this->conn, 'getDsn')) {
+                $dsn = $this->conn->getDsn();
+                if (is_string($dsn) && str_contains($dsn, ':')) {
+                    $prefix = strtolower(explode(':', $dsn, 2)[0]);
+                    if (in_array($prefix, ['mysql', 'pgsql', 'sqlite', 'sqlsrv', 'dblib'], true)) {
+                        return $this->driverNameCache = $prefix;
+                    }
+                }
+            }
+
+            // Strategy 3: Introspect connection class name
+            $classLower = strtolower($connClass);
+            if (str_contains($classLower, 'pgsql') || str_contains($classLower, 'postgres')) {
+                return $this->driverNameCache = 'pgsql';
+            }
+            if (str_contains($classLower, 'mysql') || str_contains($classLower, 'mariadb')) {
+                return $this->driverNameCache = 'mysql';
+            }
+            if (str_contains($classLower, 'sqlite')) {
+                return $this->driverNameCache = 'sqlite';
+            }
+        } catch (\Throwable) {
+            // Ignore introspection failures
+        }
+
+        // Strategy 4: Try executing a PostgreSQL-specific function to detect
+        try {
+            $pdo->query('SELECT current_database()');
+            return $this->driverNameCache = 'pgsql';
+        } catch (\Throwable) {
+            // Not PostgreSQL
+        }
+
+        // Default fallback: assume MySQL
+        return $this->driverNameCache = 'mysql';
+    }
+
     /**
      * Returns the SQL query as a string.
      */
@@ -436,7 +511,7 @@ abstract class AbstractQueryBuilder
         }
 
         try {
-            $driver = $this->pdo()->getAttribute(PDO::ATTR_DRIVER_NAME);
+            $driver = $this->getDriverName();
 
             if ($driver === 'sqlite') {
                 // PRAGMA table_info(table)
