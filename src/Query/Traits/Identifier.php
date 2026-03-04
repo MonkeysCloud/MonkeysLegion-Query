@@ -33,8 +33,7 @@ trait Identifier
      */
     public function quoteIdent(string $ident): string
     {
-        $q = '`' . str_replace('`', '``', $ident) . '`';
-        return $q;
+        return $this->quoteIdentifier($ident);
     }
 
     /** Quote qualified name preserving schema when present. */
