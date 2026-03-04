@@ -142,14 +142,14 @@ abstract class EntityHelper
                 error_log('' . get_class($val) . ' is not a DateTime, checking for ManyToOne');
                 throw new \LogicException(
                     "Missing FK column `$col` for relation `{$prop->getName()}` on `{$this->table}`. " .
-                        "Did you annotate the property with #[ManyToOne] and map the column correctly?"
+                    "Did you annotate the property with #[ManyToOne] and map the column correctly?"
                 );
             }
             if ($data[$col] === null) {
                 error_log('' . get_class($val) . ' is not a DateTime, checking for ManyToOne');
                 throw new \LogicException(
                     "FK `$col` is NULL even though relation `{$prop->getName()}` is set. " .
-                        "Check that the related entity has an initialized id."
+                    "Check that the related entity has an initialized id."
                 );
             }
         }
@@ -209,7 +209,7 @@ abstract class EntityHelper
     protected function extractPersistableData(object $entity): array
     {
         $data = [];
-        $ref  = new ReflectionClass($entity);
+        $ref = new ReflectionClass($entity);
 
         foreach ($ref->getProperties() as $prop) {
             if (!$prop->isInitialized($entity)) {
@@ -219,7 +219,7 @@ abstract class EntityHelper
             // Handle Field attributes
             if ($prop->getAttributes(Field::class)) {
                 // Skip uninitialized id on insert
-                if ($prop->getName() === 'id' && ! $prop->isInitialized($entity)) {
+                if ($prop->getName() === 'id' && !$prop->isInitialized($entity)) {
                     continue;
                 }
 
@@ -371,24 +371,24 @@ abstract class EntityHelper
         $className = $entity ? get_class($entity) : $this->entityClass;
         $ownClass = new ReflectionClass($className);
 
-        if (! $ownClass->hasProperty($relationProp)) {
+        if (!$ownClass->hasProperty($relationProp)) {
             throw new InvalidArgumentException("Property {$relationProp} not found on {$className}");
         }
 
-        $prop  = $ownClass->getProperty($relationProp);
+        $prop = $ownClass->getProperty($relationProp);
         $attrs = $prop->getAttributes(ManyToMany::class);
 
-        if (! $attrs) {
+        if (!$attrs) {
             throw new InvalidArgumentException("{$relationProp} is not a ManyToMany relation");
         }
 
         /** @var ManyToMany $meta */
         $meta = $attrs[0]->newInstance();
-        $jt   = $meta->joinTable;
+        $jt = $meta->joinTable;
         $owning = true;
 
         // if no joinTable here, follow mappedBy/inversedBy to other side
-        if (! $jt) {
+        if (!$jt) {
             $owning = false;
             $otherProp = $meta->mappedBy ?? $meta->inversedBy
                 ?? throw new InvalidArgumentException(
@@ -396,14 +396,14 @@ abstract class EntityHelper
                 );
 
             $otherClass = new ReflectionClass($meta->targetEntity);
-            if (! $otherClass->hasProperty($otherProp)) {
+            if (!$otherClass->hasProperty($otherProp)) {
                 throw new InvalidArgumentException("Property {$otherProp} not found on {$meta->targetEntity}");
             }
 
             $otherAttrs = $otherClass->getProperty($otherProp)
                 ->getAttributes(ManyToMany::class);
 
-            if (! $otherAttrs) {
+            if (!$otherAttrs) {
                 throw new InvalidArgumentException("{$otherProp} is not a ManyToMany relation on {$meta->targetEntity}");
             }
 
@@ -493,8 +493,12 @@ abstract class EntityHelper
         // Ensure $id is a string for consistent handling
         $id = (string) $id;
 
-        $rc  = new \ReflectionClass($this->entityClass);
+        $rc = new \ReflectionClass($this->entityClass);
         $pdo = $this->qb->pdo();
+
+        // Use QueryBuilder's quoteIdentifier (Identifier trait) — it auto-detects
+        // the driver, escapes embedded quote chars, and supports all drivers.
+        $qi = fn(string $ident): string => $this->qb->quoteIdentifier($ident);
 
         foreach ($rc->getProperties() as $prop) {
             $propName = $prop->getName();
@@ -503,7 +507,7 @@ abstract class EntityHelper
             if ($prop->getAttributes(ManyToMany::class)) {
                 try {
                     [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName());
-                    $sql  = "DELETE FROM `{$jt}` WHERE `{$ownCol}` = ? OR `{$invCol}` = ?";
+                    $sql = "DELETE FROM {$qi($jt)} WHERE {$qi($ownCol)} = ? OR {$qi($invCol)} = ?";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute([$id, $id]);
                 } catch (\Throwable $e) {
@@ -520,9 +524,9 @@ abstract class EntityHelper
                         continue;
                     }
                     $tbl = $this->tableOf($meta->targetEntity);
-                    $fk  = $this->getRelationColumnName($meta->mappedBy, $tbl);
+                    $fk = $this->getRelationColumnName($meta->mappedBy, $tbl);
 
-                    $sql  = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
+                    $sql = "UPDATE {$qi($tbl)} SET {$qi($fk)} = NULL WHERE {$qi($fk)} = ?";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute([$id]);
                 } catch (\Throwable $e) {
@@ -541,9 +545,9 @@ abstract class EntityHelper
                     $meta = $o2o[0]->newInstance();
                     if ($meta->mappedBy) {
                         $tbl = $this->tableOf($meta->targetEntity);
-                        $fk  = $this->getRelationColumnName($meta->mappedBy, $tbl);
+                        $fk = $this->getRelationColumnName($meta->mappedBy, $tbl);
 
-                        $sql  = "UPDATE `{$tbl}` SET `{$fk}` = NULL WHERE `{$fk}` = ?";
+                        $sql = "UPDATE {$qi($tbl)} SET {$qi($fk)} = NULL WHERE {$qi($fk)} = ?";
                         $stmt = $pdo->prepare($sql);
                         $stmt->execute([$id]);
                     } else {
@@ -592,17 +596,17 @@ abstract class EntityHelper
         $ltokens = array_map(fn($t) => strtolower($t), $tokens);
 
         // Candidate builders
-        $snake     = implode('_', $ltokens);              // ip_pool
-        $noUnders  = implode('', $ltokens);               // ippool
+        $snake = implode('_', $ltokens);              // ip_pool
+        $noUnders = implode('', $ltokens);               // ippool
         $camelLike = $propertyName . '_id';               // listGroup_id (DB uses camel + _id)
-        $camelId   = $propertyName . 'Id';                // companyId (DB uses camel + Id)
+        $camelId = $propertyName . 'Id';                // companyId (DB uses camel + Id)
 
         // Heuristic: merge leading short acronym-ish token with next (ip+pool → ippool)
         $merged = $ltokens;
         if (count($ltokens) >= 2 && strlen($ltokens[0]) <= 3) {
             $merged = [$ltokens[0] . $ltokens[1], ...array_slice($ltokens, 2)];
         }
-        $mergedSnake    = implode('_', $merged);          // ippool
+        $mergedSnake = implode('_', $merged);          // ippool
         $mergedNoUnders = implode('', $merged);           // ippool
 
         // Full candidate list (ordered by likelihood)
@@ -706,7 +710,7 @@ abstract class EntityHelper
     protected function quoteIfReserved(string $ident): string
     {
         // already quoted or an expression — leave as-is
-        if ($ident === '' || str_contains($ident, '`') || strpbrk($ident, " \t\n\r()")) {
+        if ($ident === '' || str_contains($ident, '`') || str_contains($ident, '"') || strpbrk($ident, " \t\n\r()")) {
             return $ident;
         }
 
@@ -718,7 +722,11 @@ abstract class EntityHelper
 
         // simple identifier: quote if in reserved set
         if (in_array(strtolower($ident), self::$reservedIdents, true)) {
-            return '`' . $ident . '`';
+            $driver = $this->qb->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            return match ($driver) {
+                'pgsql', 'sqlite' => '"' . $ident . '"',
+                default => '`' . $ident . '`',
+            };
         }
         return $ident;
     }
