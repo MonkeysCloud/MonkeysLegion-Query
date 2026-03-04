@@ -286,7 +286,7 @@ abstract class EntityHelper
         }
 
         $pdo = $this->qb->pdo();
-        $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        $driver = $this->qb->getDriverName();
         $cols = [];
 
         try {
@@ -722,7 +722,7 @@ abstract class EntityHelper
 
         // simple identifier: quote if in reserved set
         if (in_array(strtolower($ident), self::$reservedIdents, true)) {
-            $driver = $this->qb->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
+            $driver = $this->qb->getDriverName();
             return match ($driver) {
                 'pgsql', 'sqlite' => '"' . $ident . '"',
                 default => '`' . $ident . '`',

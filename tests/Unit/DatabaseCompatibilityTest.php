@@ -266,4 +266,30 @@ class DatabaseCompatibilityTest extends TestCase
         $result2 = $ref->invoke($repo, 'username');
         $this->assertEquals('username', $result2, 'Non-reserved identifier should not be quoted');
     }
+
+    /**
+     * Test that getDriverName() returns the correct driver and caches it.
+     */
+    public function testGetDriverNameReturnsSqlite(): void
+    {
+        $driver = $this->qb->getDriverName();
+        $this->assertEquals('sqlite', $driver, 'getDriverName() should detect SQLite');
+
+        // Call again to verify caching returns the same value
+        $driver2 = $this->qb->getDriverName();
+        $this->assertSame($driver, $driver2, 'getDriverName() should return cached value');
+    }
+
+    /**
+     * Test that columnExists() uses getDriverName() and works with SQLite.
+     */
+    public function testColumnExistsWithSqlite(): void
+    {
+        // uuid_items table has 'id' and 'name' columns from setUp
+        $ref = new \ReflectionMethod($this->qb, 'columnExists');
+
+        $this->assertTrue($ref->invoke($this->qb, null, 'uuid_items', 'id'), 'Column "id" should exist');
+        $this->assertTrue($ref->invoke($this->qb, null, 'uuid_items', 'name'), 'Column "name" should exist');
+        $this->assertFalse($ref->invoke($this->qb, null, 'uuid_items', 'nonexistent'), 'Column "nonexistent" should not exist');
+    }
 }
