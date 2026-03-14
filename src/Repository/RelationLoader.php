@@ -52,7 +52,7 @@ abstract class RelationLoader extends EntityHelper
             $this->context->setDepth($entity, 0);
         }
 
-        $ref = new ReflectionClass($entity);
+        $ref = self::reflect($entity);
 
         foreach ($ref->getProperties() as $prop) {
             // Handle ManyToOne relationships
@@ -116,7 +116,7 @@ abstract class RelationLoader extends EntityHelper
             return;
         }
 
-        $ref = new ReflectionClass($entity);
+        $ref = self::reflect($entity);
 
         foreach ($ref->getProperties() as $prop) {
             $isCollectionRelation = false;
@@ -203,16 +203,7 @@ abstract class RelationLoader extends EntityHelper
             return;
         }
 
-        $qb = clone $this->qb;
-        $row = $qb->select(['t.*'])
-            ->from($targetTable, 't')
-            ->where("t.id", '=', $fkValue)
-            ->fetch($targetClass);
-        if ($row) {
-            $this->safeSetProperty($prop, $entity, $this->context->getInstance($targetClass, $fkValue));
-            return;
-        }
-
+        // Single query (previously duplicated)
         $qb = clone $this->qb;
         $row = $qb->select(['t.*'])
             ->from($targetTable, 't')
@@ -765,5 +756,324 @@ abstract class RelationLoader extends EntityHelper
         }
 
         $prop->setValue($entity, $value);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  BATCH RELATION LOADING — eliminates N+1 for findBy / findAll
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Load all relations for a collection of entities using batched queries.
+     *
+     * Instead of N queries per relation (one per entity), this issues a single
+     * WHERE … IN (…) query per relation type and distributes results back.
+     *
+     * @param object[] $entities  Hydrated root entities (same class)
+     */
+    protected function batchLoadRelations(array $entities): void
+    {
+        if (empty($entities)) {
+            return;
+        }
+
+        // Register root entities in context
+        foreach ($entities as $entity) {
+            $entityId = $this->getEntityId($entity);
+            if ($entityId === null) {
+                continue;
+            }
+            $entityClass = get_class($entity);
+            if (!$this->context->hasInstance($entityClass, $entityId)) {
+                $this->context->registerInstance($entityClass, $entityId, $entity);
+                $this->context->setDepth($entity, 0);
+            }
+        }
+
+        $ref = self::reflect($entities[0]);
+
+        foreach ($ref->getProperties() as $prop) {
+            try {
+                // ManyToOne — batch by FK
+                if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
+                    $attr = $manyToOneAttrs[0]->newInstance();
+                    $this->batchLoadManyToOne($entities, $prop, $attr);
+                }
+
+                // OneToOne owning side — same as ManyToOne
+                if ($oneToOneAttrs = $prop->getAttributes(OneToOne::class)) {
+                    $attr = $oneToOneAttrs[0]->newInstance();
+                    if (!$attr->mappedBy) {
+                        $this->batchLoadManyToOne($entities, $prop, new ManyToOne(
+                            targetEntity: $attr->targetEntity,
+                            inversedBy: $attr->inversedBy,
+                            nullable: $attr->nullable
+                        ));
+                    } else {
+                        // Inverse side: fall back to per-entity loading (rare)
+                        foreach ($entities as $entity) {
+                            if ($this->canGoDeeper($entity)) {
+                                $this->loadOneToOneInverse($entity, $prop, $attr);
+                            }
+                        }
+                    }
+                }
+
+                // OneToMany — batch by parent IDs
+                if ($oneToManyAttrs = $prop->getAttributes(OneToMany::class)) {
+                    $attr = $oneToManyAttrs[0]->newInstance();
+                    $this->batchLoadOneToMany($entities, $prop, $attr);
+                }
+
+                // ManyToMany — batch via join table
+                if ($manyToManyAttrs = $prop->getAttributes(ManyToMany::class)) {
+                    $attr = $manyToManyAttrs[0]->newInstance();
+                    $this->batchLoadManyToMany($entities, $prop, $attr);
+                }
+            } catch (\Exception $e) {
+                error_log("Batch relation load failed for {$prop->getName()}: " . $e->getMessage());
+                // Fallback: set default value
+                $isCollection = $prop->getAttributes(OneToMany::class) || $prop->getAttributes(ManyToMany::class);
+                foreach ($entities as $entity) {
+                    $this->safeSetProperty($prop, $entity, $isCollection ? [] : null);
+                }
+            }
+        }
+    }
+
+    /**
+     * Batch-load ManyToOne/OneToOne(owning) relations.
+     *
+     * Collects all FK values from $entities, loads target entities with a
+     * single WHERE id IN (...) query, then assigns them back.
+     */
+    private function batchLoadManyToOne(array $entities, ReflectionProperty $prop, ManyToOne $attr): void
+    {
+        $fkColumn    = $this->getRelationColumnName($prop->getName());
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
+
+        // 1) Collect unique FK values
+        $fkValues = [];
+        foreach ($entities as $entity) {
+            if (!$this->canGoDeeper($entity)) {
+                $this->safeSetProperty($prop, $entity, null);
+                continue;
+            }
+            $fkValue = $this->getEntityPropValue($entity, $fkColumn);
+            $fkValue = $this->normalizeFk($fkValue);
+            if ($fkValue !== null && !$this->context->hasInstance($targetClass, $fkValue)) {
+                $fkValues[$fkValue] = true;
+            }
+        }
+
+        // 2) Batch-fetch missing target entities
+        $uniqueFks = array_keys($fkValues);
+        if (!empty($uniqueFks)) {
+            // Build WHERE id IN (...) with parameter binding
+            $placeholders = implode(',', array_fill(0, count($uniqueFks), '?'));
+            $pdo = $this->qb->pdo();
+            $sql = "SELECT * FROM {$targetTable} WHERE id IN ({$placeholders})";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute(array_values($uniqueFks));
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            foreach ($rows as $row) {
+                $relatedEntity = \MonkeysLegion\Entity\Hydrator::hydrate($targetClass, $row);
+                $relatedId = (string) ($row['id'] ?? '');
+                if ($relatedId !== '' && !$this->context->hasInstance($targetClass, $relatedId)) {
+                    $this->context->registerInstance($targetClass, $relatedId, $relatedEntity);
+                    $this->context->setDepth($relatedEntity, 1);
+                }
+            }
+        }
+
+        // 3) Assign from context
+        foreach ($entities as $entity) {
+            if (!$this->canGoDeeper($entity)) {
+                continue; // already set to null above
+            }
+            $fkValue = $this->normalizeFk($this->getEntityPropValue($entity, $fkColumn));
+            if ($fkValue === null) {
+                $this->safeSetProperty($prop, $entity, null);
+                continue;
+            }
+            $related = $this->context->getInstance($targetClass, $fkValue);
+            $this->safeSetProperty($prop, $entity, $related);
+        }
+
+        // 4) Recursively load deeper relations for newly loaded entities
+        foreach ($uniqueFks as $fk) {
+            $instance = $this->context->getInstance($targetClass, $fk);
+            if ($instance && $this->canGoDeeper($instance)) {
+                $this->loadRelationsWithGuard($instance);
+            }
+        }
+    }
+
+    /**
+     * Batch-load OneToMany relations.
+     *
+     * Issues a single SELECT … WHERE fk_col IN (...) to load all children,
+     * then groups and distributes them by parent ID.
+     */
+    private function batchLoadOneToMany(array $entities, ReflectionProperty $prop, OneToMany $attr): void
+    {
+        if (!$attr->mappedBy) {
+            foreach ($entities as $entity) {
+                $this->safeSetProperty($prop, $entity, []);
+            }
+            return;
+        }
+
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
+        $fkColumn    = $this->getRelationColumnName($attr->mappedBy, $targetTable);
+
+        // Collect parent IDs
+        $parentIds = [];
+        foreach ($entities as $entity) {
+            if (!$this->canGoDeeper($entity)) {
+                $this->safeSetProperty($prop, $entity, []);
+                continue;
+            }
+            $eid = $this->getEntityId($entity);
+            if ($eid !== null) {
+                $parentIds[$eid] = true;
+            }
+        }
+
+        if (empty($parentIds)) {
+            return;
+        }
+
+        $uniqueParentIds = array_keys($parentIds);
+        $placeholders = implode(',', array_fill(0, count($uniqueParentIds), '?'));
+        $pdo = $this->qb->pdo();
+        $sql = "SELECT * FROM {$targetTable} WHERE {$fkColumn} IN ({$placeholders})";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(array_values($uniqueParentIds));
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        // Group children by FK value
+        $grouped = [];
+        foreach ($rows as $row) {
+            $childEntity = \MonkeysLegion\Entity\Hydrator::hydrate($targetClass, $row);
+            $childId = (string) ($row['id'] ?? '');
+            $parentFk = (string) ($row[$fkColumn] ?? '');
+
+            if ($childId !== '' && !$this->context->hasInstance($targetClass, $childId)) {
+                $this->context->registerInstance($targetClass, $childId, $childEntity);
+                $this->context->setDepth($childEntity, 1);
+            } elseif ($childId !== '') {
+                $childEntity = $this->context->getInstance($targetClass, $childId) ?? $childEntity;
+            }
+
+            $grouped[$parentFk][] = $childEntity;
+        }
+
+        // Assign grouped children to parent entities
+        foreach ($entities as $entity) {
+            $eid = $this->getEntityId($entity);
+            $children = $grouped[$eid] ?? [];
+            $this->safeSetProperty($prop, $entity, $children);
+        }
+
+        // Recursively load deeper relations for children
+        foreach ($rows as $row) {
+            $childId = (string) ($row['id'] ?? '');
+            if ($childId !== '') {
+                $instance = $this->context->getInstance($targetClass, $childId);
+                if ($instance && $this->canGoDeeper($instance)) {
+                    $this->loadRelationsWithGuard($instance);
+                }
+            }
+        }
+    }
+
+    /**
+     * Batch-load ManyToMany relations.
+     *
+     * Joins through the pivot table with a single WHERE own_col IN (...)
+     * and distributes results by owning entity ID.
+     */
+    private function batchLoadManyToMany(array $entities, ReflectionProperty $prop, ManyToMany $attr): void
+    {
+        // Collect entity IDs
+        $entityIds = [];
+        foreach ($entities as $entity) {
+            if (!$this->canGoDeeper($entity)) {
+                $this->safeSetProperty($prop, $entity, []);
+                continue;
+            }
+            $eid = $this->getEntityId($entity);
+            if ($eid !== null) {
+                $entityIds[$eid] = true;
+            }
+        }
+
+        if (empty($entityIds)) {
+            return;
+        }
+
+        try {
+            [$jt, $ownCol, $invCol] = $this->getJoinTableMeta($prop->getName(), $entities[0]);
+        } catch (\Exception $e) {
+            foreach ($entities as $entity) {
+                $this->safeSetProperty($prop, $entity, []);
+            }
+            return;
+        }
+
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
+
+        $uniqueIds = array_keys($entityIds);
+        $placeholders = implode(',', array_fill(0, count($uniqueIds), '?'));
+        $pdo = $this->qb->pdo();
+
+        // Single join query fetches all related records for all parent entities
+        $sql = "SELECT t.*, j.{$ownCol} AS __pivot_owner_id
+                FROM {$targetTable} t
+                JOIN {$jt} j ON j.{$invCol} = t.id
+                WHERE j.{$ownCol} IN ({$placeholders})";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(array_values($uniqueIds));
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        // Group by owning entity
+        $grouped = [];
+        foreach ($rows as $row) {
+            $ownerId = (string) ($row['__pivot_owner_id'] ?? '');
+            unset($row['__pivot_owner_id']);
+
+            $childEntity = \MonkeysLegion\Entity\Hydrator::hydrate($targetClass, $row);
+            $childId = (string) ($row['id'] ?? '');
+
+            if ($childId !== '' && !$this->context->hasInstance($targetClass, $childId)) {
+                $this->context->registerInstance($targetClass, $childId, $childEntity);
+                $this->context->setDepth($childEntity, 1);
+            } elseif ($childId !== '') {
+                $childEntity = $this->context->getInstance($targetClass, $childId) ?? $childEntity;
+            }
+
+            $grouped[$ownerId][] = $childEntity;
+        }
+
+        // Assign
+        foreach ($entities as $entity) {
+            $eid = $this->getEntityId($entity);
+            $this->safeSetProperty($prop, $entity, $grouped[$eid] ?? []);
+        }
+
+        // Recursively load deeper relations for related entities
+        foreach ($rows as $row) {
+            $childId = (string) ($row['id'] ?? '');
+            if ($childId !== '') {
+                $instance = $this->context->getInstance($targetClass, $childId);
+                if ($instance && $this->canGoDeeper($instance)) {
+                    $this->loadRelationsWithGuard($instance);
+                }
+            }
+        }
     }
 }

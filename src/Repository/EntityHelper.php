@@ -34,6 +34,30 @@ abstract class EntityHelper
     /** @var array<string, array<string>> $tableColumnsCache */
     protected array $tableColumnsCache = [];
 
+    // ── Reflection caches (static — shared across all repository instances) ──
+    /** @var array<string, ReflectionClass> */
+    protected static array $reflClassCache = [];
+    /** @var array<string, ReflectionProperty> */
+    protected static array $reflPropCache = [];
+
+    /**
+     * Get a cached ReflectionClass instance.
+     */
+    protected static function reflect(string|object $class): ReflectionClass
+    {
+        $key = is_object($class) ? get_class($class) : $class;
+        return self::$reflClassCache[$key] ??= new ReflectionClass($key);
+    }
+
+    /**
+     * Get a cached ReflectionProperty instance.
+     */
+    protected static function reflectProp(string|object $class, string $prop): ReflectionProperty
+    {
+        $key = (is_object($class) ? get_class($class) : $class) . '::' . $prop;
+        return self::$reflPropCache[$key] ??= new ReflectionProperty($class, $prop);
+    }
+
     protected static array $reservedIdents = [
         'key',
         'keys',
@@ -59,7 +83,7 @@ abstract class EntityHelper
             return;
         }
 
-        $idProp = new ReflectionProperty($entity, 'id');
+        $idProp = self::reflectProp($entity, 'id');
 
         if (!$idProp->isInitialized($entity)) {
             return;
@@ -124,7 +148,7 @@ abstract class EntityHelper
 
     protected function assertRelationsAreSerialized(object $entity, array $data): void
     {
-        $ref = new \ReflectionClass($entity);
+        $ref = self::reflect($entity);
 
         foreach ($ref->getProperties() as $prop) {
             $attrs = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class);
@@ -209,7 +233,7 @@ abstract class EntityHelper
     protected function extractPersistableData(object $entity): array
     {
         $data = [];
-        $ref = new ReflectionClass($entity);
+        $ref = self::reflect($entity);
 
         foreach ($ref->getProperties() as $prop) {
             if (!$prop->isInitialized($entity)) {
@@ -245,7 +269,7 @@ abstract class EntityHelper
                     }
                 } else {
                     // Get the ID of the related entity
-                    $idProp = new ReflectionProperty($relatedEntity, 'id');
+                    $idProp = self::reflectProp($relatedEntity, 'id');
                     $data[$columnName] = $idProp->getValue($relatedEntity);
                 }
             }
@@ -268,7 +292,7 @@ abstract class EntityHelper
                         $data[$columnName] = null;
                     } else {
                         // Get the ID of the related entity
-                        $idProp = new ReflectionProperty($relatedEntity, 'id');
+                        $idProp = self::reflectProp($relatedEntity, 'id');
                         $data[$columnName] = $idProp->getValue($relatedEntity);
                     }
                 }
@@ -372,7 +396,7 @@ abstract class EntityHelper
     protected function getJoinTableMeta(string $relationProp, ?object $entity = null): array
     {
         $className = $entity ? get_class($entity) : $this->entityClass;
-        $ownClass = new ReflectionClass($className);
+        $ownClass = self::reflect($className);
 
         if (!$ownClass->hasProperty($relationProp)) {
             throw new InvalidArgumentException("Property {$relationProp} not found on {$className}");
@@ -398,7 +422,7 @@ abstract class EntityHelper
                     "Relation {$relationProp} has no joinTable or mappedBy/inversedBy"
                 );
 
-            $otherClass = new ReflectionClass($meta->targetEntity);
+            $otherClass = self::reflect($meta->targetEntity);
             if (!$otherClass->hasProperty($otherProp)) {
                 throw new InvalidArgumentException("Property {$otherProp} not found on {$meta->targetEntity}");
             }
@@ -437,7 +461,7 @@ abstract class EntityHelper
     protected function getEntityId(object $entity): ?string
     {
         if (property_exists($entity, 'id')) {
-            $idProp = new ReflectionProperty($entity, 'id');
+            $idProp = self::reflectProp($entity, 'id');
             return $idProp->isInitialized($entity) ? (string) $idProp->getValue($entity) : null;
         }
         return null;
@@ -449,7 +473,7 @@ abstract class EntityHelper
     protected function getEntityPropValue(object $entity, string $propName): mixed
     {
         if (property_exists($entity, $propName)) {
-            $prop = new ReflectionProperty($entity, $propName);
+            $prop = self::reflectProp($entity, $propName);
             return $prop->isInitialized($entity) ? $prop->getValue($entity) : null;
         }
         return null;
@@ -458,28 +482,34 @@ abstract class EntityHelper
     /**
      * @throws \ReflectionException
      */
+    /** @var array<string, string> */
+    protected static array $tableOfCache = [];
+
     protected function tableOf(string $entityClass): string
     {
+        if (isset(self::$tableOfCache[$entityClass])) {
+            return self::$tableOfCache[$entityClass];
+        }
+
         // ① explicit constant on the entity
         if (defined("$entityClass::TABLE")) {
-            return $entityClass::TABLE;
+            return self::$tableOfCache[$entityClass] = $entityClass::TABLE;
         }
 
         // ② `$table` default on the repository stub
         $repoClass = str_replace('\\Entity\\', '\\Repository\\', $entityClass) . 'Repository';
         if (class_exists($repoClass)) {
-            $rc = new \ReflectionClass($repoClass);
+            $rc = self::reflect($repoClass);
             if ($rc->hasProperty('table')) {
-                // read the *default* value without building an object
-                $defaults = $rc->getDefaultProperties();      // PHP ≥7.4
+                $defaults = $rc->getDefaultProperties();
                 if (!empty($defaults['table'])) {
-                    return (string) $defaults['table'];
+                    return self::$tableOfCache[$entityClass] = (string) $defaults['table'];
                 }
             }
         }
 
         // ③ fallback rule (lower-case short name)
-        return strtolower(new \ReflectionClass($entityClass)->getShortName());
+        return self::$tableOfCache[$entityClass] = strtolower(self::reflect($entityClass)->getShortName());
     }
 
     /**
@@ -496,7 +526,7 @@ abstract class EntityHelper
         // Ensure $id is a string for consistent handling
         $id = (string) $id;
 
-        $rc = new \ReflectionClass($this->entityClass);
+        $rc = self::reflect($this->entityClass);
         $pdo = $this->qb->pdo();
 
         // Use QueryBuilder's quoteIdentifier (Identifier trait) — it auto-detects
@@ -689,7 +719,7 @@ abstract class EntityHelper
         }
 
         // if $key is a property on the entity and it's a relation, convert to FK
-        $rc = new \ReflectionClass($this->entityClass);
+        $rc = self::reflect($this->entityClass);
         if ($rc->hasProperty($key)) {
             $prop = $rc->getProperty($key);
 
@@ -744,7 +774,7 @@ abstract class EntityHelper
         if (is_object($value)) {
             // extract id if present
             if (property_exists($value, 'id')) {
-                $rp = new \ReflectionProperty($value, 'id');
+                $rp = self::reflectProp($value, 'id');
                 return $rp->isInitialized($value) ? $rp->getValue($value) : null;
             }
             // fallback – try to stringify if object has __toString
@@ -779,11 +809,12 @@ abstract class EntityHelper
      */
     protected function normalizeFk(mixed $fkValue): ?string
     {
-        if ($fkValue === '' || $fkValue === 0 || $fkValue === '0') {
+        if ($fkValue === '' || $fkValue === null || $fkValue === 0 || $fkValue === '0') {
             return null;
         }
 
-        if (is_int($fkValue) || (is_string($fkValue) && ctype_digit($fkValue))) {
+        // Accept any int or non-empty string (supports numeric IDs and UUIDs)
+        if (is_int($fkValue) || is_string($fkValue)) {
             return (string) $fkValue;
         }
 
@@ -796,7 +827,7 @@ abstract class EntityHelper
             return null;
         }
 
-        $rp = new \ReflectionProperty($row, $column);
+        $rp = self::reflectProp($row, $column);
         return $rp->isInitialized($row) ? $rp->getValue($row) : null;
     }
 
