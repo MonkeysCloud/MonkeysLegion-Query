@@ -32,7 +32,7 @@ abstract class EntityHelper
 
     // cache: tableName => array<string> columns
     /** @var array<string, array<string>> $tableColumnsCache */
-    protected array $tableColumnsCache = [];
+    protected static array $tableColumnsCache = [];
 
     // ── Reflection caches (static — shared across all repository instances) ──
     /** @var array<string, ReflectionClass> */
@@ -308,12 +308,13 @@ abstract class EntityHelper
      */
     protected function listTableColumns(string $table): array
     {
-        if (isset($this->tableColumnsCache[$table])) {
-            return $this->tableColumnsCache[$table];
-        }
-
         $pdo = $this->qb->pdo();
         $driver = $this->qb->getDriverName();
+        $cacheKey = $driver . ':' . spl_object_id($pdo) . ':' . $table;
+
+        if (isset(self::$tableColumnsCache[$cacheKey])) {
+            return self::$tableColumnsCache[$cacheKey];
+        }
         $cols = [];
 
         try {
@@ -381,8 +382,8 @@ abstract class EntityHelper
             }
         }
 
-        $this->tableColumnsCache[$table] = $cols ?: [];
-        return $this->tableColumnsCache[$table];
+        self::$tableColumnsCache[$cacheKey] = $cols ?: [];
+        return self::$tableColumnsCache[$cacheKey];
     }
 
     /**

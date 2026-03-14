@@ -22,6 +22,34 @@ use ReflectionProperty;
  */
 abstract class EntityRepository extends RelationLoader
 {
+    // ── Schema introspection caches (shared across all repositories) ──
+    /** @var array<int, string> pdoId → driver name */
+    protected static array $driverCache = [];
+    /** @var array<int, string> pdoId → schema/database name */
+    protected static array $schemaCache = [];
+    /** @var array<string, array<string>> driver:pdoId:schema → table name list */
+    protected static array $tablesCache = [];
+    /** @var array<string, array> driver:pdoId:schema.table → FK metadata */
+    protected static array $fkCache = [];
+    /** @var array<string, array> driver:pdoId:schema.table → unique index metadata */
+    protected static array $uniqueCache = [];
+
+    /**
+     * Clear all static schema caches. Call after running migrations.
+     */
+    public static function clearSchemaCache(): void
+    {
+        self::$driverCache = [];
+        self::$schemaCache = [];
+        self::$tablesCache = [];
+        self::$fkCache = [];
+        self::$uniqueCache = [];
+        self::$tableColumnsCache = [];
+        self::$reflClassCache = [];
+        self::$reflPropCache = [];
+        self::$tableOfCache = [];
+    }
+
     public function __construct(QueryBuilder $qb)
     {
         $this->context = new HydrationContext(3); // default max depth
@@ -97,7 +125,8 @@ abstract class EntityRepository extends RelationLoader
         array $orderBy = [],
         int|null $limit = null,
         int|null $offset = null,
-        bool $loadRelations = true
+        bool $loadRelations = true,
+        ?array $eagerLoad = null,
     ): array {
         // Fresh context per query
         $this->context = new HydrationContext($this->context->maxDepth);
@@ -127,7 +156,7 @@ abstract class EntityRepository extends RelationLoader
 
         // Batch-load all relations in a single pass (eliminates N+1)
         if ($loadRelations && !empty($entities)) {
-            $this->batchLoadRelations($entities);
+            $this->batchLoadRelations($entities, $eagerLoad);
         }
 
         return $entities;
@@ -141,7 +170,7 @@ abstract class EntityRepository extends RelationLoader
      * @return object[]
      * @throws \ReflectionException
      */
-    public function findAll(array $criteria = [], bool $loadRelations = true): array
+    public function findAll(array $criteria = [], bool $loadRelations = true, ?array $eagerLoad = null): array
     {
         // Fresh context per query
         $this->context = new HydrationContext($this->context->maxDepth);
@@ -162,7 +191,7 @@ abstract class EntityRepository extends RelationLoader
 
         // Batch-load all relations in a single pass (eliminates N+1)
         if ($loadRelations && !empty($entities)) {
-            $this->batchLoadRelations($entities);
+            $this->batchLoadRelations($entities, $eagerLoad);
         }
 
         return $entities;
@@ -290,276 +319,31 @@ abstract class EntityRepository extends RelationLoader
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
         }
 
-        // Detect database driver and get schema name
-        $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
-        $schema = '';
+        // Detect database driver and schema (cached per connection)
+        $connKey = (string) spl_object_id($pdo);
+        $driver = self::$driverCache[$connKey] ??= $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
 
-        switch ($driver) {
-            case 'sqlite':
-                $schema = 'main'; // SQLite uses 'main' as the default schema
-                break;
-            case 'pgsql':
-                $stmt = $pdo->query('SELECT current_database()');
-                $schema = $stmt ? (string) $stmt->fetchColumn() : 'public';
-                break;
-            default: // mysql, mariadb
-                $stmt = $pdo->query('SELECT DATABASE()');
-                if (!$stmt) {
-                    throw new \RuntimeException('Failed to get current database name.');
-                }
-                $schema = (string) $stmt->fetchColumn();
-                break;
+        if (!isset(self::$schemaCache[$connKey])) {
+            self::$schemaCache[$connKey] = match ($driver) {
+                'sqlite' => 'main',
+                'pgsql'  => (string) ($pdo->query('SELECT current_database()')?->fetchColumn() ?: 'public'),
+                default  => (function () use ($pdo, $driver): string {
+                    $schema = (string) ($pdo->query('SELECT DATABASE()')?->fetchColumn() ?: '');
+                    if ($schema === '') {
+                        throw new \RuntimeException(
+                            "Unable to determine database/schema for driver '{$driver}'. "
+                            . 'Ensure a database is selected before running repository operations.'
+                        );
+                    }
+                    return $schema;
+                })(),
+            };
         }
+        $schema = self::$schemaCache[$connKey];
 
-        // STATIC caches
-        static $___fkCache = [];
-        static $___uniqueCache = [];
-        static $___tablesCache = [];
-
-        // Load all table names in schema once (multi-DB)
-        $loadTables = function (string $schema) use ($pdo, $driver, &$___tablesCache): array {
-            if (isset($___tablesCache[$schema])) {
-                return $___tablesCache[$schema];
-            }
-
-            switch ($driver) {
-                case 'sqlite':
-                    $st = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
-                    return $___tablesCache[$schema] = $st ? array_map(fn($r) => $r['name'], $st->fetchAll(\PDO::FETCH_ASSOC)) : [];
-
-                case 'pgsql':
-                    $st = $pdo->prepare("SELECT table_name FROM information_schema.tables WHERE table_catalog = current_database() AND table_schema = 'public'");
-                    $st->execute();
-                    return $___tablesCache[$schema] = array_map(fn($r) => $r['table_name'], $st->fetchAll(\PDO::FETCH_ASSOC));
-
-                default: // mysql
-                    $st = $pdo->prepare("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = :s");
-                    $st->execute([':s' => $schema]);
-                    return $___tablesCache[$schema] = array_map(fn($r) => $r['TABLE_NAME'], $st->fetchAll(\PDO::FETCH_ASSOC));
-            }
-        };
-
-        // Resolve actual table name (handles underscores→none, case-insensitive)
-        $resolveTable = function (string $schema, string $name) use ($loadTables): ?string {
-            $tables = $loadTables($schema);
-            $map = [];
-            foreach ($tables as $t) {
-                $map[strtolower($t)] = $t;
-            }
-            $needle = strtolower($name);
-            if (isset($map[$needle])) {
-                return $map[$needle];
-            }
-            $needleNoUnderscore = str_replace('_', '', $needle);
-            foreach ($map as $low => $orig) {
-                if (str_replace('_', '', $low) === $needleNoUnderscore) {
-                    return $orig;
-                }
-            }
-            return null;
-        };
-
-        // FKs: COLUMN_NAME => ['ref_schema','ref_table','ref_col','constraint_name'] (multi-DB)
-        $loadFks = function (string $schema, string $table) use ($pdo, $driver, &$___fkCache): array {
-            $key = "{$schema}.{$table}";
-            if (isset($___fkCache[$key])) {
-                return $___fkCache[$key];
-            }
-
-            $out = [];
-
-            switch ($driver) {
-                case 'sqlite':
-                    // SQLite: Use PRAGMA foreign_key_list
-                    try {
-                        $st = $pdo->query("PRAGMA foreign_key_list(\"{$table}\")");
-                        if ($st) {
-                            foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-                                $out[$r['from']] = [
-                                    'constraint_name' => "fk_{$table}_{$r['id']}",
-                                    'ref_schema'      => $schema,
-                                    'ref_table'       => $r['table'],
-                                    'ref_col'         => $r['to'] ?: 'id',
-                                ];
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        // SQLite FK introspection may not be available
-                    }
-                    break;
-
-                case 'pgsql':
-                    // PostgreSQL: Use information_schema
-                    $sql = "SELECT kcu.column_name, tc.constraint_name, 
-                                   ccu.table_catalog as ref_schema, ccu.table_name as ref_table, ccu.column_name as ref_col
-                              FROM information_schema.table_constraints tc
-                              JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-                              JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
-                             WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = :t";
-                    $st = $pdo->prepare($sql);
-                    $st->execute([':t' => $table]);
-                    foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-                        $out[$r['column_name']] = [
-                            'constraint_name' => $r['constraint_name'],
-                            'ref_schema'      => $r['ref_schema'] ?: $schema,
-                            'ref_table'       => $r['ref_table'],
-                            'ref_col'         => $r['ref_col'] ?: 'id',
-                        ];
-                    }
-                    break;
-
-                default: // mysql
-                    $sql = "SELECT COLUMN_NAME, CONSTRAINT_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
-                          FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                         WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t AND REFERENCED_TABLE_NAME IS NOT NULL";
-                    $st  = $pdo->prepare($sql);
-                    $st->execute([':s' => $schema, ':t' => $table]);
-                    foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-                        $out[$r['COLUMN_NAME']] = [
-                            'constraint_name' => $r['CONSTRAINT_NAME'],
-                            'ref_schema'      => $r['REFERENCED_TABLE_SCHEMA'] ?: $schema,
-                            'ref_table'       => $r['REFERENCED_TABLE_NAME'],
-                            'ref_col'         => $r['REFERENCED_COLUMN_NAME'] ?: 'id',
-                        ];
-                    }
-                    break;
-            }
-
-            return $___fkCache[$key] = $out;
-        };
-
-        // Unique indexes (incl. PRIMARY) - multi-DB
-        $loadUniqueIndexes = function (string $schema, string $table) use ($pdo, $driver, &$___uniqueCache): array {
-            $key = "{$schema}.{$table}";
-            if (isset($___uniqueCache[$key])) {
-                return $___uniqueCache[$key];
-            }
-
-            $idx = [];
-
-            switch ($driver) {
-                case 'sqlite':
-                    // SQLite: Use PRAGMA index_list
-                    try {
-                        $st = $pdo->query("PRAGMA index_list(\"{$table}\")");
-                        if ($st) {
-                            foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-                                if ((int)$r['unique'] !== 1) {
-                                    continue;
-                                }
-                                $indexName = $r['name'];
-                                $isPrimary = str_starts_with($indexName, 'sqlite_autoindex_') || $indexName === 'PRIMARY';
-
-                                // Get columns for this index
-                                $colSt = $pdo->query("PRAGMA index_info(\"{$indexName}\")");
-                                $cols = $colSt ? array_map(fn($c) => $c['name'], $colSt->fetchAll(\PDO::FETCH_ASSOC)) : [];
-
-                                if ($cols) {
-                                    $idx[$indexName] = ['name' => $indexName, 'columns' => $cols, 'is_primary' => $isPrimary];
-                                }
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        // Ignore
-                    }
-                    break;
-
-                case 'pgsql':
-                    // PostgreSQL: Use pg_catalog
-                    $sql = "SELECT i.relname as index_name, a.attname as column_name,
-                                   ix.indisunique as is_unique, ix.indisprimary as is_primary
-                              FROM pg_catalog.pg_class t
-                              JOIN pg_catalog.pg_index ix ON t.oid = ix.indrelid
-                              JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid
-                              JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
-                             WHERE t.relname = :t AND ix.indisunique = true
-                          ORDER BY i.relname, a.attnum";
-                    $st = $pdo->prepare($sql);
-                    $st->execute([':t' => $table]);
-                    foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-                        $name = $r['index_name'];
-                        if (!isset($idx[$name])) {
-                            $idx[$name] = ['name' => $name, 'columns' => [], 'is_primary' => (bool)$r['is_primary']];
-                        }
-                        $idx[$name]['columns'][] = $r['column_name'];
-                    }
-                    break;
-
-                default: // mysql
-                    $sql = "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, SEQ_IN_INDEX
-                          FROM INFORMATION_SCHEMA.STATISTICS
-                         WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t
-                      ORDER BY INDEX_NAME, SEQ_IN_INDEX";
-                    $st  = $pdo->prepare($sql);
-                    $st->execute([':s' => $schema, ':t' => $table]);
-                    foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-                        if ((int)$r['NON_UNIQUE'] !== 0) {
-                            continue;
-                        }
-                        $name = $r['INDEX_NAME'];
-                        if (!isset($idx[$name])) {
-                            $idx[$name] = ['name' => $name, 'columns' => [], 'is_primary' => ($name === 'PRIMARY')];
-                        }
-                        $idx[$name]['columns'][] = $r['COLUMN_NAME'];
-                    }
-                    break;
-            }
-
-            return $___uniqueCache[$key] = array_values($idx);
-        };
-
-        // Select id by composite key
-        $selectIdByKey = function (array $key) {
-            $q = (clone $this->qb)->select(['id'])->from($this->table);
-            $first = true;
-            foreach ($key as $c => $v) {
-                if ($first) {
-                    $q->where($c, '=', $v);
-                    $first = false;
-                } else {
-                    $q->andWhere($c, '=', $v);
-                }
-            }
-            return $q->fetch();
-        };
-
-        // Self-heal FK (when 1452 is thrown due to wrong referenced table name)
-        $attemptRepairFk = function (string $schema, string $table, array $fkMap) use ($pdo, $resolveTable): bool {
-            foreach ($fkMap as $col => $meta) {
-                $refSchema   = $meta['ref_schema'] ?: $schema;
-                $refTableOrg = $meta['ref_table'] ?? '';
-                $refCol      = $meta['ref_col'] ?? 'id';
-                $cname       = $meta['constraint_name'] ?? null;
-                if (!$refTableOrg || !$cname) {
-                    continue;
-                }
-
-                $resolved = $resolveTable($refSchema, $refTableOrg);
-                if (!$resolved || strcasecmp($resolved, $refTableOrg) === 0) {
-                    continue;
-                }
-
-                // verify resolved table really exists
-                $chk = $pdo->prepare("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=:s AND TABLE_NAME=:t");
-                $chk->execute([':s' => $refSchema, ':t' => $resolved]);
-                if (!$chk->fetchColumn()) {
-                    continue;
-                }
-
-                try {
-                    $pdo->exec("ALTER TABLE `{$table}` DROP FOREIGN KEY `{$cname}`");
-                    $pdo->exec("ALTER TABLE `{$table}` ADD CONSTRAINT `{$cname}` FOREIGN KEY (`{$col}`) REFERENCES `{$resolved}` (`{$refCol}`) ON DELETE SET NULL");
-                    return true;
-                } catch (\Throwable $e) {
-                    // ignore and continue
-                }
-            }
-            return false;
-        };
-
-        // Build metadata
-        $fkMap     = $loadFks($schema, $this->table);
-        $uniqueIdx = $loadUniqueIndexes($schema, $this->table);
+        // Build metadata (all cached statically)
+        $fkMap     = $this->loadForeignKeys($pdo, $driver, $schema, $this->table);
+        $uniqueIdx = $this->loadUniqueIndexes($pdo, $driver, $schema, $this->table);
 
         // Choose a natural key (prefer real UNIQUEs, de-prioritize FK-only)
         $dataKeys = array_keys($data);
@@ -603,7 +387,7 @@ abstract class EntityRepository extends RelationLoader
             foreach ($naturalKeyCols as $c) {
                 $keyMap[$c] = $data[$c];
             }
-            $existing = $selectIdByKey($keyMap);
+            $existing = $this->selectIdByKey($keyMap);
             if ($existing && isset($existing->id)) {
                 $isUpdate = true;
                 $data['id'] = $existing->id;
@@ -653,30 +437,6 @@ abstract class EntityRepository extends RelationLoader
             throw new \LogicException("No data to INSERT for `{$this->table}` and entity " . get_class($entity));
         }
 
-        // Soft FK preflight with resolution (log-only previously; now silent — DB enforces truth)
-        $fkCols = array_keys($fkMap);
-        foreach ($fkColsFromProps as $fkPropCol) {
-            if (!in_array($fkPropCol, $fkCols, true)) {
-                $fkCols[] = $fkPropCol;
-            }
-        }
-        foreach ($fkCols as $col) {
-            if (!array_key_exists($col, $data)) {
-                continue;
-            }
-            try {
-                $meta = $fkMap[$col] ?? ['ref_schema' => $schema, 'ref_table' => preg_replace('/_id$/', '', $col), 'ref_col' => 'id'];
-                $refSchema = $meta['ref_schema'] ?? $schema;
-                $refTableOrig = $meta['ref_table'] ?? preg_replace('/_id$/', '', $col);
-                $refTable = $resolveTable($refSchema, $refTableOrig) ?: $refTableOrig;
-                $refCol   = $meta['ref_col'] ?? 'id';
-
-                $q = (clone $this->qb)->select([$refCol])->from($refTable)->where($refCol, '=', $data[$col]);
-                $q->fetch(); // ignore result; DB will enforce for real
-            } catch (\Throwable $fkEx) {
-                // soft-skip any preflight errors
-            }
-        }
 
         $cols         = array_keys($data);
         $placeholders = array_map(fn($c) => ':' . $c, $cols);
@@ -756,7 +516,7 @@ abstract class EntityRepository extends RelationLoader
                     foreach ($naturalKeyCols as $c) {
                         $keyMap[$c] = $data[$c];
                     }
-                    $row = $selectIdByKey($keyMap);
+                    $row = $this->selectIdByKey($keyMap);
                     if ($row && isset($row->id)) {
                         $existingId = $row->id;
                         $setParts = [];
@@ -783,7 +543,7 @@ abstract class EntityRepository extends RelationLoader
 
                 // FK wrong referenced table: try FK repair once, then retry (MySQL only)
                 if ($driver === 'mysql' && $errorCode === 1452 && !$retriedAfterRepair) {
-                    if ($attemptRepairFk($schema, $this->table, $fkMap)) {
+                    if ($this->attemptRepairFk($pdo, $driver, $schema, $this->table, $fkMap)) {
                         $retriedAfterRepair = true;
                         continue; // retry INSERT
                     }
@@ -1194,5 +954,258 @@ abstract class EntityRepository extends RelationLoader
             }
         }
     }
-}
 
+    // ──────────────────────────────────────────────────────────────────
+    //  Static-cached schema introspection helpers
+    // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Load all table names in a schema (cached statically).
+     */
+    protected function loadAllTables(\PDO $pdo, string $driver, string $schema): array
+    {
+        $cacheKey = $driver . ':' . spl_object_id($pdo) . ':' . $schema;
+        if (isset(self::$tablesCache[$cacheKey])) {
+            return self::$tablesCache[$cacheKey];
+        }
+
+        return self::$tablesCache[$cacheKey] = match ($driver) {
+            'sqlite' => array_map(
+                fn($r) => $r['name'],
+                $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")?->fetchAll(\PDO::FETCH_ASSOC) ?: []
+            ),
+            'pgsql' => (function () use ($pdo) {
+                $st = $pdo->prepare("SELECT table_name FROM information_schema.tables WHERE table_catalog = current_database() AND table_schema = 'public'");
+                $st->execute();
+                return array_map(fn($r) => $r['table_name'], $st->fetchAll(\PDO::FETCH_ASSOC));
+            })(),
+            default => (function () use ($pdo, $schema) {
+                $st = $pdo->prepare("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = :s");
+                $st->execute([':s' => $schema]);
+                return array_map(fn($r) => $r['TABLE_NAME'], $st->fetchAll(\PDO::FETCH_ASSOC));
+            })(),
+        };
+    }
+
+    /**
+     * Resolve actual table name (handles underscores/case-insensitive).
+     */
+    protected function resolveTableName(\PDO $pdo, string $driver, string $schema, string $name): ?string
+    {
+        $tables = $this->loadAllTables($pdo, $driver, $schema);
+        $map = [];
+        foreach ($tables as $t) {
+            $map[strtolower($t)] = $t;
+        }
+        $needle = strtolower($name);
+        if (isset($map[$needle])) {
+            return $map[$needle];
+        }
+        $needleNoUnderscore = str_replace('_', '', $needle);
+        foreach ($map as $low => $orig) {
+            if (str_replace('_', '', $low) === $needleNoUnderscore) {
+                return $orig;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Load FK metadata for a table (cached statically).
+     */
+    protected function loadForeignKeys(\PDO $pdo, string $driver, string $schema, string $table): array
+    {
+        $key = $driver . ':' . spl_object_id($pdo) . ':' . $schema . '.' . $table;
+        if (isset(self::$fkCache[$key])) {
+            return self::$fkCache[$key];
+        }
+
+        $out = [];
+
+        switch ($driver) {
+            case 'sqlite':
+                try {
+                    $st = $pdo->query("PRAGMA foreign_key_list(\"{$table}\")");
+                    if ($st) {
+                        foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                            $out[$r['from']] = [
+                                'constraint_name' => "fk_{$table}_{$r['id']}",
+                                'ref_schema'      => $schema,
+                                'ref_table'       => $r['table'],
+                                'ref_col'         => $r['to'] ?: 'id',
+                            ];
+                        }
+                    }
+                } catch (\Throwable $e) {
+                }
+                break;
+
+            case 'pgsql':
+                $sql = "SELECT kcu.column_name, tc.constraint_name,
+                               ccu.table_catalog as ref_schema, ccu.table_name as ref_table, ccu.column_name as ref_col
+                          FROM information_schema.table_constraints tc
+                          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+                          JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
+                         WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = :t";
+                $st = $pdo->prepare($sql);
+                $st->execute([':t' => $table]);
+                foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                    $out[$r['column_name']] = [
+                        'constraint_name' => $r['constraint_name'],
+                        'ref_schema'      => $r['ref_schema'] ?: $schema,
+                        'ref_table'       => $r['ref_table'],
+                        'ref_col'         => $r['ref_col'] ?: 'id',
+                    ];
+                }
+                break;
+
+            default: // mysql
+                $sql = "SELECT COLUMN_NAME, CONSTRAINT_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+                      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                     WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t AND REFERENCED_TABLE_NAME IS NOT NULL";
+                $st = $pdo->prepare($sql);
+                $st->execute([':s' => $schema, ':t' => $table]);
+                foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                    $out[$r['COLUMN_NAME']] = [
+                        'constraint_name' => $r['CONSTRAINT_NAME'],
+                        'ref_schema'      => $r['REFERENCED_TABLE_SCHEMA'] ?: $schema,
+                        'ref_table'       => $r['REFERENCED_TABLE_NAME'],
+                        'ref_col'         => $r['REFERENCED_COLUMN_NAME'] ?: 'id',
+                    ];
+                }
+                break;
+        }
+
+        return self::$fkCache[$key] = $out;
+    }
+
+    /**
+     * Load unique indexes for a table (cached statically).
+     */
+    protected function loadUniqueIndexes(\PDO $pdo, string $driver, string $schema, string $table): array
+    {
+        $key = $driver . ':' . spl_object_id($pdo) . ':' . $schema . '.' . $table;
+        if (isset(self::$uniqueCache[$key])) {
+            return self::$uniqueCache[$key];
+        }
+
+        $idx = [];
+
+        switch ($driver) {
+            case 'sqlite':
+                try {
+                    $st = $pdo->query("PRAGMA index_list(\"{$table}\")");
+                    if ($st) {
+                        foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                            if ((int)$r['unique'] !== 1) {
+                                continue;
+                            }
+                            $indexName = $r['name'];
+                            $isPrimary = str_starts_with($indexName, 'sqlite_autoindex_') || $indexName === 'PRIMARY';
+                            $colSt = $pdo->query("PRAGMA index_info(\"{$indexName}\")");
+                            $cols = $colSt ? array_map(fn($c) => $c['name'], $colSt->fetchAll(\PDO::FETCH_ASSOC)) : [];
+                            if ($cols) {
+                                $idx[$indexName] = ['name' => $indexName, 'columns' => $cols, 'is_primary' => $isPrimary];
+                            }
+                        }
+                    }
+                } catch (\Throwable $e) {
+                }
+                break;
+
+            case 'pgsql':
+                $sql = "SELECT i.relname as index_name, a.attname as column_name,
+                               ix.indisunique as is_unique, ix.indisprimary as is_primary
+                          FROM pg_catalog.pg_class t
+                          JOIN pg_catalog.pg_index ix ON t.oid = ix.indrelid
+                          JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid
+                          JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+                         WHERE t.relname = :t AND ix.indisunique = true
+                      ORDER BY i.relname, a.attnum";
+                $st = $pdo->prepare($sql);
+                $st->execute([':t' => $table]);
+                foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                    $name = $r['index_name'];
+                    if (!isset($idx[$name])) {
+                        $idx[$name] = ['name' => $name, 'columns' => [], 'is_primary' => (bool)$r['is_primary']];
+                    }
+                    $idx[$name]['columns'][] = $r['column_name'];
+                }
+                break;
+
+            default: // mysql
+                $sql = "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, SEQ_IN_INDEX
+                      FROM INFORMATION_SCHEMA.STATISTICS
+                     WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t
+                  ORDER BY INDEX_NAME, SEQ_IN_INDEX";
+                $st = $pdo->prepare($sql);
+                $st->execute([':s' => $schema, ':t' => $table]);
+                foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                    if ((int)$r['NON_UNIQUE'] !== 0) {
+                        continue;
+                    }
+                    $name = $r['INDEX_NAME'];
+                    if (!isset($idx[$name])) {
+                        $idx[$name] = ['name' => $name, 'columns' => [], 'is_primary' => ($name === 'PRIMARY')];
+                    }
+                    $idx[$name]['columns'][] = $r['COLUMN_NAME'];
+                }
+                break;
+        }
+
+        return self::$uniqueCache[$key] = array_values($idx);
+    }
+
+    /**
+     * Select entity ID by composite natural key.
+     */
+    protected function selectIdByKey(array $key): ?object
+    {
+        $q = (clone $this->qb)->select(['id'])->from($this->table);
+        $first = true;
+        foreach ($key as $c => $v) {
+            if ($first) {
+                $q->where($c, '=', $v);
+                $first = false;
+            } else {
+                $q->andWhere($c, '=', $v);
+            }
+        }
+        return $q->fetch() ?: null;
+    }
+
+    /**
+     * Self-heal FK constraint when referenced table name is wrong (MySQL only).
+     */
+    protected function attemptRepairFk(\PDO $pdo, string $driver, string $schema, string $table, array $fkMap): bool
+    {
+        foreach ($fkMap as $col => $meta) {
+            $refSchema   = $meta['ref_schema'] ?: $schema;
+            $refTableOrg = $meta['ref_table'] ?? '';
+            $refCol      = $meta['ref_col'] ?? 'id';
+            $cname       = $meta['constraint_name'] ?? null;
+            if (!$refTableOrg || !$cname) {
+                continue;
+            }
+
+            $resolved = $this->resolveTableName($pdo, $driver, $refSchema, $refTableOrg);
+            if (!$resolved || strcasecmp($resolved, $refTableOrg) === 0) {
+                continue;
+            }
+
+            $chk = $pdo->prepare("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=:s AND TABLE_NAME=:t");
+            $chk->execute([':s' => $refSchema, ':t' => $resolved]);
+            if (!$chk->fetchColumn()) {
+                continue;
+            }
+
+            try {
+                $pdo->exec("ALTER TABLE `{$table}` DROP FOREIGN KEY `{$cname}`");
+                $pdo->exec("ALTER TABLE `{$table}` ADD CONSTRAINT `{$cname}` FOREIGN KEY (`{$col}`) REFERENCES `{$resolved}` (`{$refCol}`) ON DELETE SET NULL");
+                return true;
+            } catch (\Throwable $e) {
+            }
+        }
+        return false;
+    }
+}
