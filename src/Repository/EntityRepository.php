@@ -38,9 +38,12 @@ abstract class EntityRepository extends RelationLoader
      */
     public function find(int|string|object $idOrEntity, bool $loadRelations = true): ?object
     {
+        // Fresh context per query to avoid stale references
+        $this->context = new HydrationContext($this->context->maxDepth);
+
         // ☞ accept entity or id
         if (is_object($idOrEntity)) {
-            $rp = new \ReflectionProperty($idOrEntity, 'id');
+            $rp = self::reflectProp($idOrEntity, 'id');
             $id = (string) $rp->getValue($idOrEntity);
         } else {
             $id = (string) $idOrEntity;
@@ -96,6 +99,9 @@ abstract class EntityRepository extends RelationLoader
         int|null $offset = null,
         bool $loadRelations = true
     ): array {
+        // Fresh context per query
+        $this->context = new HydrationContext($this->context->maxDepth);
+
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
 
@@ -117,19 +123,11 @@ abstract class EntityRepository extends RelationLoader
 
         foreach ($entities as $entity) {
             $this->storeOriginalValues($entity);
+        }
 
-            if ($loadRelations) {
-                // Reset context for each root entity to ensure proper depth calculation
-                $entityId = $this->getEntityId($entity);
-                if ($entityId !== null) {
-                    // Register as a root entity with depth 0
-                    $entityClass = get_class($entity);
-                    $this->context->registerInstance($entityClass, $entityId, $entity);
-                    $this->context->setDepth($entity, 0);
-                    // Load relations with guard
-                    $this->loadRelationsWithGuard($entity);
-                }
-            }
+        // Batch-load all relations in a single pass (eliminates N+1)
+        if ($loadRelations && !empty($entities)) {
+            $this->batchLoadRelations($entities);
         }
 
         return $entities;
@@ -145,23 +143,26 @@ abstract class EntityRepository extends RelationLoader
      */
     public function findAll(array $criteria = [], bool $loadRelations = true): array
     {
+        // Fresh context per query
+        $this->context = new HydrationContext($this->context->maxDepth);
+
         $qb = clone $this->qb;
         $qb->select()->from($this->table);
         $criteria = $this->normalizeCriteria($criteria);
         foreach ($criteria as $column => $value) {
             $qb->andWhere($column, '=', $value);
         }
-        $rows = $qb->fetchAll();
-        $entities = array_map(
-            fn($r) => Hydrator::hydrate($this->entityClass, $r),
-            $rows
-        );
+
+        // Use consistent hydration path (same as findBy)
+        $entities = $qb->fetchAll($this->entityClass);
 
         foreach ($entities as $entity) {
             $this->storeOriginalValues($entity);
-            if ($loadRelations) {
-                $this->loadRelations($entity);
-            }
+        }
+
+        // Batch-load all relations in a single pass (eliminates N+1)
+        if ($loadRelations && !empty($entities)) {
+            $this->batchLoadRelations($entities);
         }
 
         return $entities;
@@ -177,7 +178,7 @@ abstract class EntityRepository extends RelationLoader
     public function save(object $entity, bool $partial = true, bool $upsert = false): int|string
     {
         // ——— Check if entity uses UUID
-        $rc = new \ReflectionClass($entity);
+        $rc = self::reflect($entity);
         $isUuid = false;
         $uuidValue = null;
 
@@ -205,7 +206,7 @@ abstract class EntityRepository extends RelationLoader
         // ——— decide update vs insert
         $isUpdate = false;
         if (property_exists($entity, 'id')) {
-            $idProp = new \ReflectionProperty($entity, 'id');
+            $idProp = self::reflectProp($entity, 'id');
             if ($idProp->isInitialized($entity) && $idProp->getValue($entity)) {
                 // For UUID: only consider it an update if we can verify the record exists
                 if ($isUuid) {
@@ -260,7 +261,7 @@ abstract class EntityRepository extends RelationLoader
         // Derive FK column names from entity attributes (fallback if FK metadata is absent)
         $fkColsFromProps = [];
         try {
-            $ref = new \ReflectionClass($entity);
+            $ref = self::reflect($entity);
             foreach ($ref->getProperties() as $prop) {
                 $attrs = $prop->getAttributes(\MonkeysLegion\Entity\Attributes\ManyToOne::class);
                 if (!$attrs) {
@@ -771,7 +772,7 @@ abstract class EntityRepository extends RelationLoader
                         $stmt->execute();
 
                         if (property_exists($entity, 'id')) {
-                            $rp = new \ReflectionProperty($entity, 'id');
+                            $rp = self::reflectProp($entity, 'id');
                             $rp->setValue($entity, $existingId);
                         }
                         $this->storeOriginalValues($entity);
@@ -831,7 +832,7 @@ abstract class EntityRepository extends RelationLoader
         $finalId = $verifyRow->id ?? $id;
 
         if (property_exists($entity, 'id')) {
-            $ref = new \ReflectionProperty($entity, 'id');
+            $ref = self::reflectProp($entity, 'id');
             $ref->setValue($entity, $finalId);
         }
 
@@ -878,7 +879,7 @@ abstract class EntityRepository extends RelationLoader
             if (!property_exists($idOrEntity, 'id')) {
                 throw new InvalidArgumentException('Entity has no id property');
             }
-            $rp = new ReflectionProperty($idOrEntity, 'id');
+            $rp = self::reflectProp($idOrEntity, 'id');
             $id = (string) $rp->getValue($idOrEntity);
 
             // Clean up stored original values
@@ -927,7 +928,7 @@ abstract class EntityRepository extends RelationLoader
      */
     public function findByRelation(string $relationProp, int|string $relatedId): array
     {
-        $rclass = new ReflectionClass($this->entityClass);
+        $rclass = self::reflect($this->entityClass);
 
         if (! $rclass->hasProperty($relationProp)) {
             throw new \InvalidArgumentException("No property $relationProp on {$this->entityClass}");
@@ -955,7 +956,7 @@ abstract class EntityRepository extends RelationLoader
                 );
 
             $targetClass = $relMeta->targetEntity;
-            $tclass      = new ReflectionClass($targetClass);
+            $tclass      = self::reflect($targetClass);
 
             if (! $tclass->hasProperty($otherProp)) {
                 throw new \InvalidArgumentException("No property $otherProp on $targetClass");
@@ -1032,7 +1033,7 @@ abstract class EntityRepository extends RelationLoader
         [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp, $entity);
 
         // retrieve the ID of this entity
-        $ref = new ReflectionProperty($entity::class, 'id');
+        $ref = self::reflectProp($entity::class, 'id');
         $ownId = $ref->getValue($entity);
 
         if (! $ownId) {
@@ -1058,7 +1059,7 @@ abstract class EntityRepository extends RelationLoader
     {
         [$table, $ownCol, $invCol] = $this->getJoinTableMeta($relationProp, $entity);
 
-        $ref = new ReflectionProperty($entity::class, 'id');
+        $ref = self::reflectProp($entity::class, 'id');
         $ownId = $ref->getValue($entity);
 
         return $this->qb
@@ -1077,7 +1078,7 @@ abstract class EntityRepository extends RelationLoader
      */
     protected function syncManyToManyRelations(object $entity): void
     {
-        $rc = new \ReflectionClass($entity);
+        $rc = self::reflect($entity);
         $entityId = $this->getEntityId($entity);
         
         if (!$entityId) {
