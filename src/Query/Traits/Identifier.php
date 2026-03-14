@@ -65,12 +65,16 @@ trait Identifier
      */
     protected function getQuoteChar(): string
     {
-        $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        // Use the robust getDriverName() from AbstractQueryBuilder
+        // instead of raw PDO::ATTR_DRIVER_NAME which can fail silently
+        $driver = method_exists($this, 'getDriverName')
+            ? $this->getDriverName()
+            : strtolower((string) $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME));
 
         return match ($driver) {
             'mysql' => '`',
             'pgsql', 'sqlite' => '"',
-            'sqlsrv', 'dblib' => '[',  // SQL Server uses brackets
+            'sqlsrv', 'dblib' => '[',
             default => '`',
         };
     }
@@ -80,7 +84,9 @@ trait Identifier
      */
     protected function getCloseQuoteChar(): string
     {
-        $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        $driver = method_exists($this, 'getDriverName')
+            ? $this->getDriverName()
+            : strtolower((string) $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME));
 
         return match ($driver) {
             'sqlsrv', 'dblib' => ']',
@@ -606,7 +612,9 @@ trait Identifier
      */
     public function normalizeCase(string $ident): string
     {
-        $driver = $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        $driver = method_exists($this, 'getDriverName')
+            ? $this->getDriverName()
+            : strtolower((string) $this->conn->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME));
 
         return match ($driver) {
             'pgsql' => $this->toLowerIdentifier($ident),
