@@ -53,8 +53,8 @@ abstract class AbstractQueryBuilder
     /** alias => [schema|null, table] */
     private array $aliasMap = [];
 
-    /** cache: "schema.table.column" => bool */
-    private array $columnExistsCache = [];
+    /** cache: "schema.table.column" => bool (static to persist across requests in worker mode) */
+    private static array $columnExistsCache = [];
 
     /**
      * Constructor.
@@ -510,8 +510,8 @@ abstract class AbstractQueryBuilder
     {
         $schema = $schema ?: null;
         $key = ($schema ? $schema . '.' : '') . $table . '.' . $column;
-        if (array_key_exists($key, $this->columnExistsCache)) {
-            return $this->columnExistsCache[$key];
+        if (array_key_exists($key, self::$columnExistsCache)) {
+            return self::$columnExistsCache[$key];
         }
 
         try {
@@ -529,7 +529,7 @@ abstract class AbstractQueryBuilder
                         break;
                     }
                 }
-                return $this->columnExistsCache[$key] = $exists;
+                return self::$columnExistsCache[$key] = $exists;
             }
 
             if ($driver === 'pgsql') {
@@ -554,10 +554,10 @@ abstract class AbstractQueryBuilder
             $stmt = $this->conn->pdo()->prepare($sql);
             $stmt->execute([':t' => $table, ':c' => $column, ':s' => $schema]);
             $exists = (bool) $stmt->fetchColumn();
-            return $this->columnExistsCache[$key] = $exists;
+            return self::$columnExistsCache[$key] = $exists;
         } catch (\Throwable $e) {
             error_log("[qb.columnExists] {$e->getMessage()} for " . ($schema ? "$schema." : "") . "$table.$column");
-            return $this->columnExistsCache[$key] = false;
+            return self::$columnExistsCache[$key] = false;
         }
     }
 

@@ -345,12 +345,21 @@ trait TableOperations
         return $this;
     }
 
+    /** @var array<string, bool> Static cache for table existence checks (persists across requests in worker mode) */
+    private static array $tableExistsCache = [];
+
     /**
      * Checks if a table exists in the database.
      * Supports MySQL, PostgreSQL, and SQLite.
+     * Results are cached statically (survives across requests in FrankenPHP worker mode).
      */
     public function tableExists(string $table, ?string $schema = null): bool
     {
+        $cacheKey = ($schema ?? '_') . '.' . $table;
+        if (array_key_exists($cacheKey, self::$tableExistsCache)) {
+            return self::$tableExistsCache[$cacheKey];
+        }
+
         try {
             $driver = $this->getDriverName();
 
@@ -358,18 +367,16 @@ trait TableOperations
                 $sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = :t";
                 $stmt = $this->conn->pdo()->prepare($sql);
                 $stmt->execute([':t' => $table]);
-                return (bool) $stmt->fetchColumn();
+                return self::$tableExistsCache[$cacheKey] = (bool) $stmt->fetchColumn();
             }
 
             if ($driver === 'pgsql') {
-                // PostgreSQL: use current_schema() for schema fallback
                 $sql = "SELECT 1
                   FROM information_schema.tables
                  WHERE table_name = :t
                    AND table_schema = COALESCE(:s, current_schema())
                  LIMIT 1";
             } else {
-                // MySQL / MariaDB: use DATABASE() for schema fallback
                 $sql = "SELECT 1
                   FROM information_schema.tables
                  WHERE table_name = :t
@@ -379,10 +386,10 @@ trait TableOperations
 
             $stmt = $this->conn->pdo()->prepare($sql);
             $stmt->execute([':t' => $table, ':s' => $schema]);
-            return (bool) $stmt->fetchColumn();
+            return self::$tableExistsCache[$cacheKey] = (bool) $stmt->fetchColumn();
         } catch (\Throwable $e) {
             error_log("[qb.exists] Throwable for '" . ($schema ? "$schema.$table" : $table) . "': " . $e->getMessage());
-            return false;
+            return self::$tableExistsCache[$cacheKey] = false;
         }
     }
 
