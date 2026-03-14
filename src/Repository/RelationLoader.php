@@ -769,8 +769,9 @@ abstract class RelationLoader extends EntityHelper
      * WHERE … IN (…) query per relation type and distributes results back.
      *
      * @param object[] $entities  Hydrated root entities (same class)
+     * @param string[]|null $eagerLoad  Relation property names to load (null = all)
      */
-    protected function batchLoadRelations(array $entities): void
+    protected function batchLoadRelations(array $entities, ?array $eagerLoad = null): void
     {
         if (empty($entities)) {
             return;
@@ -792,6 +793,11 @@ abstract class RelationLoader extends EntityHelper
         $ref = self::reflect($entities[0]);
 
         foreach ($ref->getProperties() as $prop) {
+            // When eagerLoad is specified, skip properties not in the list
+            if ($eagerLoad !== null && !in_array($prop->getName(), $eagerLoad, true)) {
+                continue;
+            }
+
             try {
                 // ManyToOne — batch by FK
                 if ($manyToOneAttrs = $prop->getAttributes(ManyToOne::class)) {
