@@ -308,12 +308,13 @@ abstract class EntityHelper
      */
     protected function listTableColumns(string $table): array
     {
-        if (isset(self::$tableColumnsCache[$table])) {
-            return self::$tableColumnsCache[$table];
-        }
-
         $pdo = $this->qb->pdo();
         $driver = $this->qb->getDriverName();
+        $cacheKey = $driver . ':' . spl_object_id($pdo) . ':' . $table;
+
+        if (isset(self::$tableColumnsCache[$cacheKey])) {
+            return self::$tableColumnsCache[$cacheKey];
+        }
         $cols = [];
 
         try {
@@ -381,8 +382,8 @@ abstract class EntityHelper
             }
         }
 
-        self::$tableColumnsCache[$table] = $cols ?: [];
-        return self::$tableColumnsCache[$table];
+        self::$tableColumnsCache[$cacheKey] = $cols ?: [];
+        return self::$tableColumnsCache[$cacheKey];
     }
 
     /**

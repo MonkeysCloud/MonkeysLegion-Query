@@ -288,16 +288,33 @@ class BatchHydrationTest extends TestCase
         $this->assertNotNull($articles[1]->publisher);
     }
 
-    // ==================== findAll with no relations loaded ====================
+    // ==================== eagerLoad — selective relation loading ====================
 
-    public function testFindAllWithoutRelationsDoesNotLoad(): void
+    public function testEagerLoadOnlyRequestedRelation(): void
     {
-        $articles = $this->articleRepo->findAll([], false);
+        // Load publishers but only eager-load 'articles', not 'categories'
+        $publishers = $this->publisherRepo->findAll([], true, eagerLoad: ['articles']);
 
-        $this->assertCount(5, $articles);
-        // Publisher should NOT be loaded when loadRelations=false
-        foreach ($articles as $article) {
-            $this->assertNull($article->publisher);
-        }
+        usort($publishers, fn($a, $b) => $a->id <=> $b->id);
+
+        // Articles SHOULD be loaded
+        $this->assertIsArray($publishers[0]->articles);
+        $this->assertCount(2, $publishers[0]->articles);
+
+        // Categories should NOT be loaded (remains default empty array)
+        $this->assertIsArray($publishers[0]->categories);
+        $this->assertCount(0, $publishers[0]->categories);
+    }
+
+    public function testEagerLoadEmptyArraySkipsAllRelations(): void
+    {
+        // eagerLoad: [] means load no relations even though loadRelations=true
+        $publishers = $this->publisherRepo->findAll([], true, eagerLoad: []);
+
+        usort($publishers, fn($a, $b) => $a->id <=> $b->id);
+
+        // Neither relation should be loaded
+        $this->assertCount(0, $publishers[0]->articles);
+        $this->assertCount(0, $publishers[0]->categories);
     }
 }

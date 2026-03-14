@@ -791,10 +791,11 @@ abstract class RelationLoader extends EntityHelper
         }
 
         $ref = self::reflect($entities[0]);
+        $eagerSet = $eagerLoad !== null ? array_flip($eagerLoad) : null;
 
         foreach ($ref->getProperties() as $prop) {
             // When eagerLoad is specified, skip properties not in the list
-            if ($eagerLoad !== null && !in_array($prop->getName(), $eagerLoad, true)) {
+            if ($eagerSet !== null && !isset($eagerSet[$prop->getName()])) {
                 continue;
             }
 

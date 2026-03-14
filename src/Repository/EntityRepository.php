@@ -23,15 +23,15 @@ use ReflectionProperty;
 abstract class EntityRepository extends RelationLoader
 {
     // ── Schema introspection caches (shared across all repositories) ──
-    /** @var array<string, string> dsn → driver name */
+    /** @var array<int, string> pdoId → driver name */
     protected static array $driverCache = [];
-    /** @var array<string, string> dsn → schema/database name */
+    /** @var array<int, string> pdoId → schema/database name */
     protected static array $schemaCache = [];
-    /** @var array<string, array<string>> schema → table name list */
+    /** @var array<string, array<string>> driver:pdoId:schema → table name list */
     protected static array $tablesCache = [];
-    /** @var array<string, array> schema.table → FK metadata */
+    /** @var array<string, array> driver:pdoId:schema.table → FK metadata */
     protected static array $fkCache = [];
-    /** @var array<string, array> schema.table → unique index metadata */
+    /** @var array<string, array> driver:pdoId:schema.table → unique index metadata */
     protected static array $uniqueCache = [];
 
     /**
@@ -44,6 +44,7 @@ abstract class EntityRepository extends RelationLoader
         self::$tablesCache = [];
         self::$fkCache = [];
         self::$uniqueCache = [];
+        self::$tableColumnsCache = [];
         self::$reflClassCache = [];
         self::$reflPropCache = [];
         self::$tableOfCache = [];
@@ -326,7 +327,16 @@ abstract class EntityRepository extends RelationLoader
             self::$schemaCache[$connKey] = match ($driver) {
                 'sqlite' => 'main',
                 'pgsql'  => (string) ($pdo->query('SELECT current_database()')?->fetchColumn() ?: 'public'),
-                default  => (string) ($pdo->query('SELECT DATABASE()')?->fetchColumn() ?: ''),
+                default  => (function () use ($pdo, $driver): string {
+                    $schema = (string) ($pdo->query('SELECT DATABASE()')?->fetchColumn() ?: '');
+                    if ($schema === '') {
+                        throw new \RuntimeException(
+                            "Unable to determine database/schema for driver '{$driver}'. "
+                            . 'Ensure a database is selected before running repository operations.'
+                        );
+                    }
+                    return $schema;
+                })(),
             };
         }
         $schema = self::$schemaCache[$connKey];
@@ -954,11 +964,12 @@ abstract class EntityRepository extends RelationLoader
      */
     protected function loadAllTables(\PDO $pdo, string $driver, string $schema): array
     {
-        if (isset(self::$tablesCache[$schema])) {
-            return self::$tablesCache[$schema];
+        $cacheKey = $driver . ':' . spl_object_id($pdo) . ':' . $schema;
+        if (isset(self::$tablesCache[$cacheKey])) {
+            return self::$tablesCache[$cacheKey];
         }
 
-        return self::$tablesCache[$schema] = match ($driver) {
+        return self::$tablesCache[$cacheKey] = match ($driver) {
             'sqlite' => array_map(
                 fn($r) => $r['name'],
                 $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")?->fetchAll(\PDO::FETCH_ASSOC) ?: []
@@ -1004,7 +1015,7 @@ abstract class EntityRepository extends RelationLoader
      */
     protected function loadForeignKeys(\PDO $pdo, string $driver, string $schema, string $table): array
     {
-        $key = "{$schema}.{$table}";
+        $key = $driver . ':' . spl_object_id($pdo) . ':' . $schema . '.' . $table;
         if (isset(self::$fkCache[$key])) {
             return self::$fkCache[$key];
         }
@@ -1073,7 +1084,7 @@ abstract class EntityRepository extends RelationLoader
      */
     protected function loadUniqueIndexes(\PDO $pdo, string $driver, string $schema, string $table): array
     {
-        $key = "{$schema}.{$table}";
+        $key = $driver . ':' . spl_object_id($pdo) . ':' . $schema . '.' . $table;
         if (isset(self::$uniqueCache[$key])) {
             return self::$uniqueCache[$key];
         }
