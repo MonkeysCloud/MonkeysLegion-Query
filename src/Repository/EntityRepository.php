@@ -7,11 +7,9 @@ namespace MonkeysLegion\Repository;
 use InvalidArgumentException;
 use MonkeysLegion\Entity\Attributes\ManyToMany;
 use MonkeysLegion\Entity\Attributes\Uuid;
-use MonkeysLegion\Entity\Hydrator;
+use MonkeysLegion\Entity\Observers\LifecycleDispatcher;
 use MonkeysLegion\Entity\Utils\Uuid as UtilsUuid;
 use MonkeysLegion\Query\QueryBuilder;
-use ReflectionClass;
-use ReflectionProperty;
 
 /**
  * Base repository with common CRUD and query methods.
@@ -206,6 +204,9 @@ abstract class EntityRepository extends RelationLoader
      */
     public function save(object $entity, bool $partial = true, bool $upsert = false): int|string
     {
+        // dispatch "saving" lifecycle event for observers
+        LifecycleDispatcher::dispatch('saving', $entity);
+
         // ——— Check if entity uses UUID
         $rc = self::reflect($entity);
         $isUuid = false;
@@ -259,6 +260,14 @@ abstract class EntityRepository extends RelationLoader
                 $uuidValue = UtilsUuid::v4();
                 $idProp->setValue($entity, $uuidValue);
             }
+        }
+
+        if ($isUpdate) {
+            // dispatch "updating" lifecycle event for observers
+            LifecycleDispatcher::dispatch('updating', $entity);
+        } else {
+            // dispatch "creating" lifecycle event for observers
+            LifecycleDispatcher::dispatch('creating', $entity);
         }
 
         // ——— collect data
@@ -332,7 +341,7 @@ abstract class EntityRepository extends RelationLoader
                     if ($schema === '') {
                         throw new \RuntimeException(
                             "Unable to determine database/schema for driver '{$driver}'. "
-                            . 'Ensure a database is selected before running repository operations.'
+                                . 'Ensure a database is selected before running repository operations.'
                         );
                     }
                     return $schema;
@@ -406,6 +415,7 @@ abstract class EntityRepository extends RelationLoader
                 $this->syncManyToManyRelations($entity);
                 return 0;
             }
+
             $setParts = [];
             foreach ($data as $col => $_) {
                 $setParts[] = $this->quoteIdentifier($col, $driver) . " = :{$col}";
@@ -421,11 +431,18 @@ abstract class EntityRepository extends RelationLoader
                 $stmt->bindValue(":_id", $id);
                 $stmt->execute();
                 $rowCount = $stmt->rowCount();
-                
+
                 // Sync ManyToMany relations on update
                 $this->syncManyToManyRelations($entity);
-                
+
                 $this->storeOriginalValues($entity);
+
+                // dispatch "updated" and "saved" lifecycle events for observers
+                if ($rowCount > 0) {
+                    LifecycleDispatcher::dispatch('updated', $entity);
+                }
+                LifecycleDispatcher::dispatch('saved', $entity);
+
                 return $rowCount;
             } catch (\PDOException $e) {
                 throw $e;
@@ -436,7 +453,6 @@ abstract class EntityRepository extends RelationLoader
         if (empty($data)) {
             throw new \LogicException("No data to INSERT for `{$this->table}` and entity " . get_class($entity));
         }
-
 
         $cols         = array_keys($data);
         $placeholders = array_map(fn($c) => ':' . $c, $cols);
@@ -536,6 +552,13 @@ abstract class EntityRepository extends RelationLoader
                             $rp->setValue($entity, $existingId);
                         }
                         $this->storeOriginalValues($entity);
+
+                        // dispatch "updated" and "saved" lifecycle events for observers
+                        if ($stmt->rowCount() > 0) {
+                            LifecycleDispatcher::dispatch('updated', $entity);
+                        }
+                        LifecycleDispatcher::dispatch('saved', $entity);
+
                         return $existingId;
                     }
                 }
@@ -600,6 +623,11 @@ abstract class EntityRepository extends RelationLoader
         $this->syncManyToManyRelations($entity);
 
         $this->storeOriginalValues($entity);
+
+        // dispatch "created" and "saved" lifecycle events for observers
+        LifecycleDispatcher::dispatch('created', $entity);
+        LifecycleDispatcher::dispatch('saved', $entity);
+
         return $finalId;
     }
 
@@ -659,6 +687,9 @@ abstract class EntityRepository extends RelationLoader
             return 0;
         }
 
+        // dispatch "deleting" lifecycle event for observers
+        LifecycleDispatcher::dispatch('deleting', $existing);
+
         try {
             // ① wipe / null related rows first
             $this->cascadeDeleteRelations($id);
@@ -672,7 +703,14 @@ abstract class EntityRepository extends RelationLoader
             $sql = "DELETE FROM {$tableName} WHERE {$idColumn} = ?";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([$id]);
-            return $stmt->rowCount();
+            $rowsAffected = $stmt->rowCount();
+
+            if ($rowsAffected > 0) {
+                // Dispatch 'deleted' event after successful deletion
+                LifecycleDispatcher::dispatch('deleted', $existing);
+            }
+
+            return $rowsAffected;
         } catch (\Throwable $e) {
             throw $e;
         }
@@ -840,7 +878,7 @@ abstract class EntityRepository extends RelationLoader
     {
         $rc = self::reflect($entity);
         $entityId = $this->getEntityId($entity);
-        
+
         if (!$entityId) {
             return; // Cannot sync without an ID
         }
@@ -854,7 +892,7 @@ abstract class EntityRepository extends RelationLoader
             // Check if this is the owning side (has joinTable)
             /** @var ManyToMany $m2m */
             $m2m = $attrs[0]->newInstance();
-            
+
             // Only sync from the owning side (the one with joinTable defined)
             if (!$m2m->joinTable && ($m2m->mappedBy || $m2m->inversedBy)) {
                 continue;
@@ -864,7 +902,7 @@ abstract class EntityRepository extends RelationLoader
             if (!$prop->isInitialized($entity)) {
                 continue;
             }
-            
+
             $collection = $prop->getValue($entity);
             if (!is_array($collection) && !($collection instanceof \Traversable)) {
                 continue;
@@ -881,7 +919,7 @@ abstract class EntityRepository extends RelationLoader
             // This prevents accidental deletion when saving an entity loaded without relations
             $hasOriginalValues = isset($this->originalValues[spl_object_id($entity)]);
             $collectionIsEmpty = count($collection) === 0;
-            
+
             if ($collectionIsEmpty && !$hasOriginalValues) {
                 // Skip sync - entity appears to be loaded without relations
                 // and collection is empty, so we can't tell if user wants to clear all

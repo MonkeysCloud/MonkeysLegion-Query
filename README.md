@@ -88,6 +88,7 @@ $posts = $qb->from('posts', 'p')
 - [Transactions](#transactions)
 - [Advanced Features](#advanced-features)
 - [Repository Pattern](#repository-pattern)
+- [Using Observers](#using-observers)
 
 ---
 
@@ -600,6 +601,7 @@ $qb->from('users')->each(function($user, $index) {
     echo "Processing user {$index}: {$user['name']}\n";
 });
 ```
+
 ### Reusing the Builder
 
 By default, read operations (like `get`, `count`, `first`) do **not** reset the builder state. This allows you to chain multiple operations on the same query configuration.
@@ -1011,6 +1013,79 @@ return [
 
 ---
 
+## 👀 Using Observers
+
+Observers allow you to hook into the lifecycle events of your entities. You can attach an observer to an entity class using the `#[ObservedBy]` attribute.
+
+### 1. Create an Observer
+
+Extend the `EntityObserver` base class and override the methods you need:
+
+```php
+use MonkeysLegion\Entity\Observers\EntityObserver;
+
+class UserObserver extends EntityObserver
+{
+    public function creating(object $entity): void
+    {
+        // Set default values or hash passwords
+        echo "Creating user: " . $entity->getUsername();
+    }
+
+    public function hydrated(object $entity): void
+    {
+        // Perform actions after the entity is loaded from the database
+        echo "User hydrated!";
+    }
+}
+```
+
+### 2. Register the Observer on the Entity
+
+You can register a single observer or an array of observers:
+
+```php
+use MonkeysLegion\Entity\Attributes\Entity;
+use MonkeysLegion\Entity\Attributes\ObservedBy;
+
+#[Entity(table: 'users')]
+#[ObservedBy(UserObserver::class)] // Single observer
+class User
+{
+    // ...
+}
+
+#[Entity(table: 'posts')]
+#[ObservedBy([PostObserver::class, ActivityLogObserver::class])] // Multiple observers
+class Post
+{
+    // ...
+}
+```
+
+### Observer Lifecycle Events
+
+The following table describes when each observer method is triggered by the `EntityRepository`:
+
+| Event      | Triggered by         | When exactly?                                      |
+|------------|---------------------|----------------------------------------------------|
+| **saving**   | `save()`            | Triggered before an insert or update begins.       |
+| **creating** | `save()`            | Triggered before a record is inserted.             |
+| **created**  | `save()`            | Triggered after a record is successfully inserted.  |
+| **updating** | `save()`            | Triggered before an existing record is updated.      |
+| **updated**  | `save()`            | Triggered after an existing record is successfully changed. |
+| **saved**    | `save()`            | Triggered after the save operation (after `created` or `updated`). |
+| **deleting** | `delete()`          | Triggered before a record is deleted.               |
+| **deleted**  | `delete()`          | Triggered after a record is successfully deleted.   |
+| **hydrated** | entity hydrator      | Automatically triggered after an entity is loaded and hydrated. |
+
+All details about observers can be found in the [Observers documentation](https://monkeyslegion.com/docs/packages/entity).
+
+> [!TIP]
+> The **updated** event is only triggered if the database update resulted in at least one changed row (rowCount > 0). The **saved** event is always triggered regardless of actual differences.
+
+---
+
 ## 🎨 Best Practices
 
 ### 1. Always Use Parameter Binding
@@ -1260,12 +1335,14 @@ class UserRepositoryTest extends TestCase
 ### Complete Method List
 
 #### Select Operations
+
 - `select()`, `addSelect()`, `selectAs()`, `selectRaw()`
 - `selectSum()`, `selectAvg()`, `selectMin()`, `selectMax()`, `selectCount()`
 - `selectConcat()`, `selectCoalesce()`, `selectCase()`, `selectJson()`
 - `distinct()`, `distinctOn()`
 
 #### Where Clauses
+
 - `where()`, `andWhere()`, `orWhere()`, `whereRaw()`
 - `whereIn()`, `whereNotIn()`, `orWhereIn()`, `orWhereNotIn()`
 - `whereBetween()`, `whereNotBetween()`, `orWhereBetween()`
@@ -1278,6 +1355,7 @@ class UserRepositoryTest extends TestCase
 - `whereGroup()`, `orWhereGroup()`, `andWhereGroup()`
 
 #### Joins
+
 - `join()`, `innerJoin()`, `leftJoin()`, `rightJoin()`, `crossJoin()`
 - `fullOuterJoin()`, `leftOuterJoin()`, `rightOuterJoin()`
 - `joinOn()`, `innerJoinOn()`, `leftJoinOn()`, `rightJoinOn()`
@@ -1288,11 +1366,13 @@ class UserRepositoryTest extends TestCase
 - `selfJoin()`, `leftSelfJoin()`
 
 #### Grouping & Ordering
+
 - `groupBy()`, `having()`, `havingRaw()`
 - `orderBy()`, `orderByRaw()`
 - `limit()`, `offset()`
 
 #### Aggregates
+
 - `count()`, `countDistinct()`, `countWhere()`
 - `sum()`, `sumDistinct()`, `sumWhere()`
 - `avg()`, `avgDistinct()`
@@ -1303,11 +1383,13 @@ class UserRepositoryTest extends TestCase
 - `exists()`, `doesntExist()`
 
 #### DML Operations
+
 - `insert()`, `insertBatch()`
 - `update()`, `delete()`
 - `execute()`, `executeRaw()`
 
 #### Fetch Operations
+
 - `fetchAll()`, `fetchAllAssoc()`, `fetchAllObjects()`
 - `fetch()`, `first()`, `firstAs()`, `firstOrFail()`
 - `find()`, `findOrFail()`, `findMany()`
@@ -1317,6 +1399,7 @@ class UserRepositoryTest extends TestCase
 - `map()`, `filter()`, `reduce()`
 
 #### Transactions
+
 - `beginTransaction()`, `commit()`, `rollback()`
 - `transaction()`, `safeTransaction()`, `transactionWithRetry()`
 - `beginTransactionNested()`, `commitNested()`, `rollbackNested()`
@@ -1325,6 +1408,7 @@ class UserRepositoryTest extends TestCase
 - `getLock()`, `releaseLock()`, `withLock()`
 
 #### Utilities
+
 - `from()`, `fromSub()`, `fromSubQuery()`
 - `duplicate()`, `clone()`, `reset()`, `fresh()`
 - `toSql()`, `getParams()`, `dump()`, `dd()`, `log()`
@@ -1352,9 +1436,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📮 Support
 
-- **Documentation**: https://monkeyslegion.com/docs/starter
-- **Issues**: https://github.com/MonkeysCloud/MonkeysLegion-Skeleton
-- **Slack**: https://join.slack.com/t/monkeyslegion/shared_invite/zt-36jut3kqo-WCwOabVrVrhHBln4xhMATA
+- **Documentation**: <https://monkeyslegion.com/docs/starter>
+- **Issues**: <https://github.com/MonkeysCloud/MonkeysLegion-Skeleton>
+- **Slack**: <https://join.slack.com/t/monkeyslegion/shared_invite/zt-36jut3kqo-WCwOabVrVrhHBln4xhMATA>
 
 ---
 
@@ -1367,6 +1451,7 @@ Created and maintained by [MonkeysCloud](https://github.com/monkeyscloud)
 **Built with ❤️ by the MonkeysLegion team**
 
 ## Contributors
+
 <table>
   <tr>
     <td>
