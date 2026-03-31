@@ -24,8 +24,8 @@ final class HydrationContext
      */
     public int $maxDepth;
 
-    /** @var \SplObjectStorage<object, array{depth:int}> */
-    private \SplObjectStorage $meta;
+    /** @var \WeakMap<object, array{depth:int}> */
+    private \WeakMap $meta;
 
     /**
      * Create a new hydration context
@@ -33,7 +33,7 @@ final class HydrationContext
     public function __construct(int $maxDepth = 2)
     {
         $this->maxDepth = $maxDepth;
-        $this->meta = new \SplObjectStorage();
+        $this->meta = new \WeakMap();
     }
 
     /**

@@ -8,6 +8,8 @@ use MonkeysLegion\Database\Contracts\ConnectionInterface;
 use MonkeysLegion\Query\Traits\Identifier;
 use MonkeysLegion\Query\Traits\TableOperations;
 use PDO;
+use Psr\SimpleCache\CacheInterface;
+use Psr\Log\LoggerInterface;
 
 abstract class AbstractQueryBuilder
 {
@@ -56,6 +58,28 @@ abstract class AbstractQueryBuilder
     /** cache: "schema.table.column" => bool (static to persist across requests in worker mode) */
     private static array $columnExistsCache = [];
 
+    // ── P2-A: PSR-16 result cache ──
+    protected ?CacheInterface $resultCache = null;
+    protected int $resultCacheTtl = 0;
+    protected ?string $resultCacheKey = null;
+
+    // ── P2-G: Prepared statement cache ──
+    protected static array $stmtCache = [];
+    protected bool $useStmtCache = false;
+
+    // ── P3-A: Read/Write connection splitting ──
+    protected ?ConnectionInterface $readConn = null;
+
+    // ── P3-B: Preflight resolution cache ──
+    private static array $preflightCache = [];
+
+    // ── P3-D: Query profiling ──
+    protected bool $profiling = false;
+    protected array $queryLog = [];
+
+    // ── P2-F: PSR-3 Logger ──
+    protected ?LoggerInterface $logger = null;
+
     /**
      * Constructor.
      *
@@ -63,6 +87,177 @@ abstract class AbstractQueryBuilder
      */
     public function __construct(protected ConnectionInterface $conn)
     {
+    }
+
+    // ── P2-A: PSR-16 result cache methods ──
+
+    /**
+     * Set a PSR-16 cache implementation for result caching.
+     */
+    public function setCache(CacheInterface $cache, int $defaultTtl = 60): static
+    {
+        $this->resultCache = $cache;
+        $this->resultCacheTtl = $defaultTtl;
+        return $this;
+    }
+
+    /**
+     * Enable result caching for the current query with optional TTL override.
+     */
+    public function cache(int $ttl = 0, ?string $key = null): static
+    {
+        $this->resultCacheTtl = $ttl ?: $this->resultCacheTtl;
+        $this->resultCacheKey = $key;
+        return $this;
+    }
+
+    /**
+     * Generate a cache key from SQL + params.
+     */
+    protected function generateCacheKey(): string
+    {
+        if ($this->resultCacheKey) {
+            return 'mlq:' . $this->resultCacheKey;
+        }
+        return 'mlq:' . hash('xxh128', $this->toSql() . serialize($this->params));
+    }
+
+    // ── P2-G: Statement cache methods ──
+
+    /**
+     * Enable the prepared statement cache. Re-uses PDOStatement objects
+     * for identical SQL strings, avoiding repeated prepare() calls.
+     */
+    public function enableStatementCache(): static
+    {
+        $this->useStmtCache = true;
+        return $this;
+    }
+
+    /**
+     * Prepare a statement, optionally reusing from cache.
+     */
+    public function prepareStatement(string $sql): \PDOStatement
+    {
+        if ($this->useStmtCache && isset(self::$stmtCache[$sql])) {
+            return self::$stmtCache[$sql];
+        }
+        $stmt = $this->getEffectivePdo($sql)->prepare($sql);
+        if ($this->useStmtCache) {
+            self::$stmtCache[$sql] = $stmt;
+        }
+        return $stmt;
+    }
+
+    /**
+     * Clear the static statement cache.
+     */
+    public static function clearStatementCache(): void
+    {
+        self::$stmtCache = [];
+    }
+
+    // ── P3-A: Read/Write splitting methods ──
+
+    /**
+     * Set a separate read connection (replica). SELECTs will be routed here.
+     */
+    public function setReadConnection(ConnectionInterface $readConn): static
+    {
+        $this->readConn = $readConn;
+        return $this;
+    }
+
+    /**
+     * Get the effective PDO for a given SQL statement.
+     * Routes SELECTs (outside transactions) to the read connection when set.
+     */
+    public function getEffectivePdo(?string $sql = null): \PDO
+    {
+        if ($this->readConn && $sql !== null && !$this->inTransaction && $this->isReadQuery($sql)) {
+            return $this->readConn->pdo();
+        }
+        return $this->conn->pdo();
+    }
+
+    /**
+     * Detect if a SQL string is a read-only query.
+     */
+    protected function isReadQuery(string $sql): bool
+    {
+        $trimmed = ltrim($sql);
+        return str_starts_with(strtoupper($trimmed), 'SELECT')
+            || str_starts_with(strtoupper($trimmed), 'SHOW')
+            || str_starts_with(strtoupper($trimmed), 'PRAGMA');
+    }
+
+    // ── P3-D: Query profiling methods ──
+
+    /**
+     * Enable query profiling.
+     */
+    public function enableProfiling(): static
+    {
+        $this->profiling = true;
+        return $this;
+    }
+
+    /**
+     * Get the query log (only populated when profiling is enabled).
+     *
+     * @return array<array{sql: string, params: array, time_ms: float}>
+     */
+    public function getQueryLog(): array
+    {
+        return $this->queryLog;
+    }
+
+    /**
+     * Reset the query log.
+     */
+    public function resetQueryLog(): static
+    {
+        $this->queryLog = [];
+        return $this;
+    }
+
+    /**
+     * Record a query in the profiling log.
+     */
+    protected function recordQuery(string $sql, array $params, float $startNs): void
+    {
+        if (!$this->profiling) {
+            return;
+        }
+        $elapsed = (hrtime(true) - $startNs) / 1_000_000; // ns → ms
+        $this->queryLog[] = [
+            'sql'     => $sql,
+            'params'  => $params,
+            'time_ms' => round($elapsed, 3),
+        ];
+    }
+
+    // ── P2-F: PSR-3 Logger methods ──
+
+    /**
+     * Set a PSR-3 logger. When set, replaces error_log() calls.
+     */
+    public function setLogger(LoggerInterface $logger): static
+    {
+        $this->logger = $logger;
+        return $this;
+    }
+
+    /**
+     * Log a message via PSR-3 logger or fall back to error_log().
+     */
+    protected function logMessage(string $level, string $message, array $context = []): void
+    {
+        if ($this->logger) {
+            $this->logger->log($level, $message, $context);
+        } else {
+            error_log("[mlq.{$level}] {$message}");
+        }
     }
 
     /**
@@ -248,10 +443,26 @@ abstract class AbstractQueryBuilder
 
     /**
      * Resolve FROM and JOIN tables before SQL generation.
-     * Logs BEFORE/AFTER for from/fromTable and each join.
+     * P3-B: Caches results for identical structural queries.
      */
     protected function preflightResolveTables(): static
     {
+        // P3-B: Check structural cache
+        $structKey = ($this->parts['from'] ?? '') . '|' . implode('|', $this->parts['joins'] ?? []);
+        $cacheKey  = hash('xxh128', $structKey);
+
+        if (isset(self::$preflightCache[$cacheKey])) {
+            $cached = self::$preflightCache[$cacheKey];
+            $this->parts['from']    = $cached['from'];
+            $this->parts['joins']   = $cached['joins'];
+            $this->aliasMap         = $cached['aliasMap'];
+
+            // Still need to normalize columns in WHERE/HAVING/SELECT/ORDER/GROUP
+            $this->normalizeClausesColumns();
+            return $this;
+        }
+
+        // ---------- Original logic ----------
         // reset per-query alias map
         $this->aliasMap = [];
 
@@ -334,7 +545,25 @@ abstract class AbstractQueryBuilder
             }
         }
 
-        // Also normalize columns inside WHERE/HAVING expressions
+        // Also normalize columns inside WHERE/HAVING/SELECT/ORDER/GROUP
+        $this->normalizeClausesColumns();
+
+        // P3-B: Cache the structural resolution
+        self::$preflightCache[$cacheKey] = [
+            'from'     => $this->parts['from'],
+            'joins'    => $this->parts['joins'],
+            'aliasMap' => $this->aliasMap,
+        ];
+
+        return $this;
+    }
+
+    /**
+     * Normalize column references in WHERE, HAVING, SELECT, ORDER BY, GROUP BY clauses.
+     * Extracted from preflightResolveTables() for reuse with cached results.
+     */
+    private function normalizeClausesColumns(): void
+    {
         if (!empty($this->parts['where'])) {
             foreach ($this->parts['where'] as $k => $w) {
                 if (isset($w['expr']) && is_string($w['expr'])) {
@@ -349,11 +578,9 @@ abstract class AbstractQueryBuilder
                 }
             }
         }
-        // ---------- SELECT / ORDER BY / GROUP BY ----------
         if (is_string($this->parts['select']) && $this->parts['select'] !== '*') {
             $this->parts['select'] = $this->normalizeColumnsClause($this->parts['select'], true);
         }
-
         if (!empty($this->parts['orderBy'])) {
             foreach ($this->parts['orderBy'] as $k => $ob) {
                 if (is_string($ob)) {
@@ -361,7 +588,6 @@ abstract class AbstractQueryBuilder
                 }
             }
         }
-
         if (!empty($this->parts['groupBy'])) {
             foreach ($this->parts['groupBy'] as $k => $gb) {
                 if (is_string($gb)) {
@@ -369,8 +595,6 @@ abstract class AbstractQueryBuilder
                 }
             }
         }
-
-        return $this;
     }
 
     protected function findAliasForColumn(string $column): ?array

@@ -300,7 +300,9 @@ trait TableOperations
      */
     public function fresh(): static
     {
-        return new static($this->conn);
+        $instance = new static($this->conn);
+        $instance->tableMap = $this->tableMap;
+        return $instance;
     }
 
     /**

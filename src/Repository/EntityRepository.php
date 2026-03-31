@@ -46,6 +46,8 @@ abstract class EntityRepository extends RelationLoader
         self::$reflClassCache = [];
         self::$reflPropCache = [];
         self::$tableOfCache = [];
+        self::$relationColumnCache = [];
+        self::$remapCache = [];
     }
 
     public function __construct(QueryBuilder $qb)
@@ -161,6 +163,49 @@ abstract class EntityRepository extends RelationLoader
     }
 
     /**
+     * P2-C: Fetch multiple entities by their primary keys in a single query.
+     *
+     * @param array<int|string> $ids
+     * @param bool $loadRelations
+     * @param ?array $eagerLoad
+     * @return array<object>
+     */
+    public function findByIds(array $ids, bool $loadRelations = true, ?array $eagerLoad = null): array
+    {
+        if (empty($ids)) {
+            return [];
+        }
+
+        $this->context = new HydrationContext($this->context->maxDepth);
+
+        $qb = $this->qb->fresh();
+        $qb->select()->from($this->table);
+
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $qb->custom("SELECT * FROM {$this->qb->quoteIdentifier($this->table)} WHERE {$this->qb->quoteIdentifier('id')} IN ({$placeholders})", array_values($ids));
+
+        $sql  = $qb->toSql();
+        $stmt = $this->qb->pdo()->prepare($sql);
+        $stmt->execute(array_values($ids));
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        $entities = array_map(
+            fn(array $r) => \MonkeysLegion\Entity\Hydrator::hydrate($this->entityClass, $r),
+            $rows
+        );
+
+        foreach ($entities as $entity) {
+            $this->storeOriginalValues($entity);
+        }
+
+        if ($loadRelations && !empty($entities)) {
+            $this->batchLoadRelations($entities, $eagerLoad);
+        }
+
+        return $entities;
+    }
+
+    /**
      * Fetch all entities matching optional criteria.
      *
      * @param array<string,mixed> $criteria
@@ -238,19 +283,12 @@ abstract class EntityRepository extends RelationLoader
         if (property_exists($entity, 'id')) {
             $idProp = self::reflectProp($entity, 'id');
             if ($idProp->isInitialized($entity) && $idProp->getValue($entity)) {
-                // For UUID: only consider it an update if we can verify the record exists
                 if ($isUuid) {
+                    // P1-C: Use dirty-flag approach instead of SELECT existence check.
+                    // If originalValues are stored (entity was loaded from DB), it's an update.
                     $existingId = $idProp->getValue($entity);
-                    // Check if this UUID already exists in the database
-                    try {
-                        $check = (clone $this->qb)->select(['id'])->from($this->table)->where('id', '=', $existingId)->fetch();
-                        if ($check && isset($check->id)) {
-                            $isUpdate = true;
-                            $uuidValue = $existingId;
-                        }
-                    } catch (\Throwable $e) {
-                        error_log("[EntityRepository::save] Error checking UUID existence: " . $e->getMessage());
-                    }
+                    $isUpdate = isset($this->originalValues[spl_object_id($entity)]);
+                    $uuidValue = $existingId;
                 } else {
                     // For auto-increment IDs, if it's set and > 0, it's an update
                     $isUpdate = true;
@@ -270,8 +308,9 @@ abstract class EntityRepository extends RelationLoader
             LifecycleDispatcher::dispatch('creating', $entity);
         }
 
-        // ——— collect data
-        $data = ($isUpdate && $partial) ? $this->getChangedFields($entity) : $this->extractPersistableData($entity);
+        // ——— collect data (P1-E: extract once, pass to getChangedFields to avoid double extraction)
+        $currentData = $this->extractPersistableData($entity);
+        $data = ($isUpdate && $partial) ? $this->getChangedFields($entity, $currentData) : $currentData;
 
         // If UUID and not updating, ensure UUID is in data
         if ($isUuid && !$isUpdate && $uuidValue) {
@@ -576,43 +615,11 @@ abstract class EntityRepository extends RelationLoader
             }
         }
 
-        // ——— VERIFY
-        $verifyRow = null;
-        if ($naturalKeyCols) {
-            $keyMap = [];
-            foreach ($naturalKeyCols as $c) {
-                $keyMap[$c] = $data[$c];
-            }
-            try {
-                $v = (clone $this->qb);
-                $firstKey = array_key_first($keyMap);
-                $verify = $v->select(['id'])
-                    ->from($this->table)
-                    ->where((string)$firstKey, '=', reset($keyMap));
-                $first = true;
-                foreach ($keyMap as $k => $vv) {
-                    if ($first) {
-                        $first = false;
-                        continue;
-                    }
-                    $verify->andWhere($k, '=', $vv);
-                }
-                $verifyRow = $verify->fetch();
-            } catch (\Exception $ex) { /* ignore */
-            }
-        } elseif ($id) {
-            try {
-                $v = (clone $this->qb);
-                $verifyRow = $v->select(['id'])->from($this->table)->where('id', '=', $id)->fetch();
-            } catch (\Exception $ex) { /* ignore */
-            }
-        }
-
-        if (!$verifyRow && !$id) {
-            throw new \RuntimeException("INSERT appeared to succeed but row not visible on same connection.");
-        }
-
-        $finalId = $verifyRow->id ?? $id;
+        // P1-B: Trust the INSERT result — PDO ERRMODE_EXCEPTION guarantees
+        // the INSERT succeeded if we reach here without an exception.
+        $finalId = $id ?: throw new \RuntimeException(
+            "INSERT appeared to succeed but no ID could be determined for `{$this->table}`."
+        );
 
         if (property_exists($entity, 'id')) {
             $ref = self::reflectProp($entity, 'id');
@@ -627,6 +634,7 @@ abstract class EntityRepository extends RelationLoader
         // dispatch "created" and "saved" lifecycle events for observers
         LifecycleDispatcher::dispatch('created', $entity);
         LifecycleDispatcher::dispatch('saved', $entity);
+
 
         return $finalId;
     }
@@ -690,6 +698,7 @@ abstract class EntityRepository extends RelationLoader
         // dispatch "deleting" lifecycle event for observers
         LifecycleDispatcher::dispatch('deleting', $existing);
 
+
         try {
             // ① wipe / null related rows first
             $this->cascadeDeleteRelations($id);
@@ -706,7 +715,6 @@ abstract class EntityRepository extends RelationLoader
             $rowsAffected = $stmt->rowCount();
 
             if ($rowsAffected > 0) {
-                // Dispatch 'deleted' event after successful deletion
                 LifecycleDispatcher::dispatch('deleted', $existing);
             }
 
@@ -970,25 +978,32 @@ abstract class EntityRepository extends RelationLoader
             $toAttach = array_diff($desiredIds, $currentIds);
             $toDetach = array_diff($currentIds, $desiredIds);
 
-            // Attach new relations
-            foreach ($toAttach as $relatedId) {
-                try {
-                    $this->qb->insert($joinTable, [
-                        $ownCol => $entityId,
-                        $invCol => $relatedId,
-                    ]);
-                } catch (\Throwable $e) {
-                    // Ignore duplicates
-                }
+            // P1-F: Batch detach (single DELETE with IN clause)
+            if (!empty($toDetach)) {
+                $pdo = $this->qb->pdo();
+                $qi  = fn(string $id): string => $this->qb->quoteIdentifier($id);
+                $placeholders = implode(',', array_fill(0, count($toDetach), '?'));
+                $pdo->prepare(
+                    "DELETE FROM {$qi($joinTable)} WHERE {$qi($ownCol)} = ? AND {$qi($invCol)} IN ({$placeholders})"
+                )->execute([$entityId, ...array_values($toDetach)]);
             }
 
-            // Detach removed relations
-            foreach ($toDetach as $relatedId) {
-                (clone $this->qb)
-                    ->delete($joinTable)
-                    ->where($ownCol, '=', $entityId)
-                    ->andWhere($invCol, '=', $relatedId)
-                    ->execute();
+            // P1-F: Batch attach (single multi-row INSERT with duplicate safety)
+            if (!empty($toAttach)) {
+                $pdo = $this->qb->pdo();
+                $qi  = fn(string $id): string => $this->qb->quoteIdentifier($id);
+                $driver = $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+                $rows   = implode(',', array_fill(0, count($toAttach), '(?,?)'));
+                $params = [];
+                foreach ($toAttach as $relId) {
+                    $params[] = $entityId;
+                    $params[] = $relId;
+                }
+                $ignoreSql = match ($driver) {
+                    'pgsql', 'sqlite' => "INSERT INTO {$qi($joinTable)} ({$qi($ownCol)},{$qi($invCol)}) VALUES {$rows} ON CONFLICT DO NOTHING",
+                    default           => "INSERT IGNORE INTO {$qi($joinTable)} ({$qi($ownCol)},{$qi($invCol)}) VALUES {$rows}",
+                };
+                $pdo->prepare($ignoreSql)->execute($params);
             }
         }
     }

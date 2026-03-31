@@ -816,12 +816,8 @@ abstract class RelationLoader extends EntityHelper
                             nullable: $attr->nullable
                         ));
                     } else {
-                        // Inverse side: fall back to per-entity loading (rare)
-                        foreach ($entities as $entity) {
-                            if ($this->canGoDeeper($entity)) {
-                                $this->loadOneToOneInverse($entity, $prop, $attr);
-                            }
-                        }
+                        // P1-D: Batch load inverse side (1 query instead of N)
+                        $this->batchLoadOneToOneInverse($entities, $prop, $attr);
                     }
                 }
 
@@ -969,6 +965,85 @@ abstract class RelationLoader extends EntityHelper
             $instance = $this->context->getInstance($targetClass, $fk);
             if ($instance && $this->canGoDeeper($instance)) {
                 $this->loadRelationsWithGuard($instance);
+            }
+        }
+    }
+
+    /**
+     * P1-D: Batch-load OneToOne inverse relations.
+     *
+     * The inverse OneToOne has the FK on the TARGET table (mappedBy column).
+     * Instead of N queries (one per entity), collect all owning-entity IDs,
+     * issue one SELECT * FROM target WHERE fk IN (?), and assign back.
+     */
+    private function batchLoadOneToOneInverse(array $entities, ReflectionProperty $prop, OneToOne $attr): void
+    {
+        $parentIds = [];
+        foreach ($entities as $entity) {
+            if (!$this->canGoDeeper($entity)) {
+                $this->safeSetProperty($prop, $entity, null);
+                continue;
+            }
+            $eid = $this->getEntityId($entity);
+            if ($eid !== null) {
+                $parentIds[$eid] = true;
+            }
+        }
+
+        if (empty($parentIds)) {
+            return;
+        }
+
+        $targetClass = $attr->targetEntity;
+        $targetTable = $this->tableOf($targetClass);
+
+        // The FK column on the target table that references us
+        // mappedBy tells us which property on the target points back to us
+        $fkCol = $this->getRelationColumnName($attr->mappedBy, $targetTable);
+
+        $uniqueParentIds = array_keys($parentIds);
+        $placeholders = implode(',', array_fill(0, count($uniqueParentIds), '?'));
+        $pdo = $this->qb->pdo();
+        $qi  = fn(string $id): string => $this->qb->quoteIdentifier($id);
+        $sql = "SELECT * FROM {$qi($targetTable)} WHERE {$qi($fkCol)} IN ({$placeholders})";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(array_values($uniqueParentIds));
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        // Index results by FK value (each parent maps to at most one inverse entity)
+        $byParentId = [];
+        foreach ($rows as $row) {
+            $relEntity = \MonkeysLegion\Entity\Hydrator::hydrate($targetClass, $row);
+            $childId   = (string) ($row['id'] ?? '');
+            $parentFk  = (string) ($row[$fkCol] ?? '');
+
+            if ($childId !== '' && !$this->context->hasInstance($targetClass, $childId)) {
+                $this->context->registerInstance($targetClass, $childId, $relEntity);
+                $this->context->setDepth($relEntity, 1);
+            } elseif ($childId !== '') {
+                $relEntity = $this->context->getInstance($targetClass, $childId) ?? $relEntity;
+            }
+
+            // OneToOne: only one result per parent
+            if ($parentFk !== '' && !isset($byParentId[$parentFk])) {
+                $byParentId[$parentFk] = $relEntity;
+            }
+        }
+
+        // Assign back to each owning entity
+        foreach ($entities as $entity) {
+            $id = $this->getEntityId($entity);
+            $this->safeSetProperty($prop, $entity, $byParentId[$id] ?? null);
+        }
+
+        // Recursively load deeper relations for newly loaded entities
+        foreach ($rows as $row) {
+            $childId = (string) ($row['id'] ?? '');
+            if ($childId !== '') {
+                $instance = $this->context->getInstance($targetClass, $childId);
+                if ($instance && $this->canGoDeeper($instance)) {
+                    $this->loadRelationsWithGuard($instance);
+                }
             }
         }
     }

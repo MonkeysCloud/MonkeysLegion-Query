@@ -34,6 +34,14 @@ abstract class EntityHelper
     /** @var array<string, array<string>> $tableColumnsCache */
     protected static array $tableColumnsCache = [];
 
+    // P1-A: cache for getRelationColumnName() results
+    /** @var array<string, string> */
+    protected static array $relationColumnCache = [];
+
+    // P1-G: cache for remapColumnsToTable() mapping
+    /** @var array<string, array<string, string>> */
+    protected static array $remapCache = [];
+
     // ── Reflection caches (static — shared across all repository instances) ──
     /** @var array<string, ReflectionClass> */
     protected static array $reflClassCache = [];
@@ -102,7 +110,7 @@ abstract class EntityHelper
      * Get only changed fields for an entity
      * @throws \ReflectionException
      */
-    protected function getChangedFields(object $entity): array
+    protected function getChangedFields(object $entity, ?array $currentData = null): array
     {
         $objectId = spl_object_id($entity);
 
@@ -111,7 +119,7 @@ abstract class EntityHelper
             return $this->extractPersistableData($entity);
         }
 
-        $currentData = $this->extractPersistableData($entity);
+        $currentData ??= $this->extractPersistableData($entity);
         $originalData = $this->originalValues[$objectId];
         $changedData = [];
 
@@ -185,27 +193,63 @@ abstract class EntityHelper
      */
     protected function remapColumnsToTable(array $data, array $colsInTable): array
     {
+        // P1-G: Cache the remap map per (entity class, column set)
+        $colsKey  = implode(',', $colsInTable);
+        $mapKey   = $this->entityClass . ':' . $colsKey;
+
+        if (!isset(self::$remapCache[$mapKey])) {
+            self::$remapCache[$mapKey] = $this->buildRemapMap($colsInTable);
+        }
+
+        $remap  = self::$remapCache[$mapKey];
         $colsSet = array_flip($colsInTable);
-        $out = $data;
+        $out    = [];
 
         foreach ($data as $key => $val) {
             if (isset($colsSet[$key])) {
-                continue; // already a real column
+                $out[$key] = $val;
+            } elseif (isset($remap[$key])) {
+                $out[$remap[$key]] = $val;
+            } else {
+                $out[$key] = $val;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Build the canonical remap map for this entity's property names → actual columns.
+     * Called once per (entity class, column set) and cached by remapColumnsToTable().
+     *
+     * @param array<string> $colsInTable
+     * @return array<string, string>  propertyKey → actual column name
+     */
+    private function buildRemapMap(array $colsInTable): array
+    {
+        $colsSet = array_flip($colsInTable);
+        $remap   = [];
+
+        // Build candidate remaps from the entity's reflection
+        $ref = self::reflect($this->entityClass);
+        foreach ($ref->getProperties() as $prop) {
+            $key = $prop->getName();
+
+            if (isset($colsSet[$key])) {
+                continue; // property name is already a real column
             }
 
-            // 1) camelCase_id → snake_case_id  (e.g. listGroup_id → list_group_id)
+            // 1) camelCase_id → snake_case_id
             if (str_ends_with($key, '_id') && preg_match('/[A-Z]/', $key)) {
-                $base = substr($key, 0, -3); // drop "_id"
+                $base  = substr($key, 0, -3);
                 $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $base)) . '_id';
                 if (isset($colsSet[$snake])) {
-                    unset($out[$key]);
-                    $out[$snake] = $val;
+                    $remap[$key] = $snake;
                     continue;
                 }
             }
 
             // 2) fuzzy: remove underscores and compare prefixes of *_id columns
-            //    (handles odd naming like list_id, group_id, etc.)
             $needle = preg_replace('/_+/', '', strtolower($key));
             foreach ($colsInTable as $col) {
                 if (!str_ends_with($col, '_id')) {
@@ -213,14 +257,13 @@ abstract class EntityHelper
                 }
                 $colKey = preg_replace('/_+/', '', strtolower($col));
                 if ($colKey === $needle) {
-                    unset($out[$key]);
-                    $out[$col] = $val;
-                    continue 2;
+                    $remap[$key] = $col;
+                    break;
                 }
             }
         }
 
-        return $out;
+        return $remap;
     }
 
     /**
@@ -615,6 +658,13 @@ abstract class EntityHelper
             return $this->columnMap[$propertyName];
         }
 
+        // P1-A: Static cache keyed by className::propName[:table]
+        $className = $this->entityClass;
+        $cacheKey  = $className . '::' . $propertyName . ($table ? ':' . $table : '');
+        if (isset(self::$relationColumnCache[$cacheKey])) {
+            return self::$relationColumnCache[$cacheKey];
+        }
+
         // Base: strip trailing Id/_id on the *property* (common on inverse sides)
         $prop = $propertyName;
         if (str_ends_with($prop, '_id')) {
@@ -665,7 +715,9 @@ abstract class EntityHelper
                 // 1) exact match
                 foreach ($candidates as $cand) {
                     if (in_array($cand, $cols, true)) {
-                        return $this->columnMap[$propertyName] = $cand;
+                        return self::$relationColumnCache[$cacheKey]
+                            = $this->columnMap[$propertyName]
+                            = $cand;
                     }
                 }
 
@@ -687,13 +739,17 @@ abstract class EntityHelper
                 }
 
                 if ($best !== null) {
-                    return $this->columnMap[$propertyName] = $best;
+                    return self::$relationColumnCache[$cacheKey]
+                        = $this->columnMap[$propertyName]
+                        = $best;
                 }
             }
         }
 
         // Fallback
-        return $this->columnMap[$propertyName] = $snake . '_id';
+        return self::$relationColumnCache[$cacheKey]
+            = $this->columnMap[$propertyName]
+            = $snake . '_id';
     }
 
     /**

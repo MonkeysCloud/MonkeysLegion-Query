@@ -25,23 +25,43 @@ trait FetchOperations
     public function fetchAll(string $class = 'stdClass'): array
     {
         $sql = $this->toSql();
-        $stmt = $this->conn->pdo()->prepare($sql);
+
+        // P2-A: Check result cache
+        if ($this->resultCache && $this->resultCacheTtl > 0) {
+            $cacheKey = $this->generateCacheKey();
+            $cached = $this->resultCache->get($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+
+        $startNs = hrtime(true);
+        $stmt = $this->prepareStatement($sql);
 
         if (!$stmt->execute($this->params)) {
             [$state, $code, $msg] = $stmt->errorInfo();
             throw new \RuntimeException("Query failed: $state/$code – $msg");
         }
 
+        $this->recordQuery($sql, $this->params, $startNs);
+
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if ($class !== 'stdClass' && class_exists($class)) {
-            return array_map(
+            $result = array_map(
                 fn(array $r) => Hydrator::hydrate($class, $r),
                 $rows
             );
+        } else {
+            $result = $rows;
         }
 
-        return $rows;
+        // P2-A: Store in cache
+        if (isset($cacheKey) && $this->resultCache) {
+            $this->resultCache->set($cacheKey, $result, $this->resultCacheTtl);
+        }
+
+        return $result;
     }
 
     /**
@@ -50,25 +70,44 @@ trait FetchOperations
     public function fetch(string $class = 'stdClass'): object|false
     {
         $sql = $this->toSql();
-        $stmt = $this->conn->pdo()->prepare($sql);
+
+        // P2-A: Check result cache
+        if ($this->resultCache && $this->resultCacheTtl > 0) {
+            $cacheKey = $this->generateCacheKey();
+            $cached = $this->resultCache->get($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+
+        $startNs = hrtime(true);
+        $stmt = $this->prepareStatement($sql);
 
         if (!$stmt->execute($this->params)) {
             [$state, $code, $msg] = $stmt->errorInfo();
             throw new \RuntimeException("Query failed: $state/$code – $msg");
         }
 
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $this->recordQuery($sql, $this->params, $startNs);
 
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$row) {
             return false;
         }
 
         if ($class !== 'stdClass' && class_exists($class)) {
-            return Hydrator::hydrate($class, $row);
+            $result = Hydrator::hydrate($class, $row);
+        } else {
+            $result = (object) $row;
         }
 
-        return (object) $row;
+        // P2-A: Store in cache
+        if (isset($cacheKey) && $this->resultCache) {
+            $this->resultCache->set($cacheKey, $result, $this->resultCacheTtl);
+        }
+
+        return $result;
     }
 
     /**
@@ -867,5 +906,62 @@ trait FetchOperations
 
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    /**
+     * P2-B: Keyset (cursor-based) pagination.
+     *
+     * More efficient than OFFSET-based pagination on large tables.
+     * Uses WHERE cursor_column > last_value ORDER BY cursor_column ASC LIMIT perPage.
+     * Works identically on MySQL, PostgreSQL, and SQLite.
+     *
+     * @param string $cursorColumn  Column to paginate on (must be indexed, usually 'id' or 'created_at')
+     * @param mixed  $lastValue     The last value from the previous page (null for first page)
+     * @param int    $perPage       Number of items per page
+     * @param string $direction     'ASC' or 'DESC'
+     * @return array{data: array, nextCursor: mixed, hasMore: bool}
+     */
+    public function paginateAfter(
+        string $cursorColumn = 'id',
+        mixed $lastValue = null,
+        int $perPage = 15,
+        string $direction = 'ASC'
+    ): array {
+        $perPage = max(1, $perPage);
+        $qb = $this->duplicate();
+
+        if ($lastValue !== null) {
+            $op = strtoupper($direction) === 'DESC' ? '<' : '>';
+            $qb->where($cursorColumn, $op, $lastValue);
+        }
+
+        $qb->orderBy($cursorColumn, strtoupper($direction))
+           ->limit($perPage + 1);
+
+        $sql  = $qb->toSql();
+        $startNs = hrtime(true);
+        $stmt = $this->prepareStatement($sql);
+
+        if (!$stmt->execute($qb->params)) {
+            [$state, $code, $msg] = $stmt->errorInfo();
+            throw new \RuntimeException("Keyset pagination failed: {$state}/{$code} – {$msg}");
+        }
+
+        $this->recordQuery($sql, $qb->params, $startNs);
+
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $hasMore = count($data) > $perPage;
+
+        if ($hasMore) {
+            array_pop($data);
+        }
+
+        $nextCursor = !empty($data) ? end($data)[$cursorColumn] ?? null : null;
+
+        return [
+            'data'       => $data,
+            'nextCursor' => $nextCursor,
+            'hasMore'    => $hasMore,
+        ];
     }
 }
