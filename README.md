@@ -1,1470 +1,223 @@
-# MonkeysLegion Query Builder
+# MonkeysLegion Query — v2
 
-A **powerful, fluent Query Builder & Micro-ORM** for PHP 8.4+, designed for the MonkeysLegion framework. Built on PDO with zero external dependencies, providing a clean, expressive API for database operations.
+[![PHP](https://img.shields.io/badge/PHP-8.4%2B-blue.svg)](https://php.net)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-156%20pass-brightgreen.svg)]()
 
-[![PHP Version](https://img.shields.io/badge/PHP-8.4%2B-blue.svg)](https://www.php.net/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+Performance-first Query Builder & Micro-ORM for the [MonkeysLegion](https://github.com/MonkeysCloud) framework.
 
-## ✨ Features
+## Architecture
 
-- 🔗 **Fluent Query Builder** - Chainable, expressive API
-- 🛡️ **SQL Injection Protection** - Automatic parameter binding
-- 🔄 **Transaction Support** - Full ACID compliance with savepoints
-- 🎯 **Multiple Database Support** - MySQL, PostgreSQL, SQLite
-- 📊 **Advanced Queries** - Joins, subqueries, unions, CTEs
-- 🏗️ **Repository Pattern** - Built-in entity repository support
-- ⚡ **Performance Optimized** - Chunking, streaming, pagination
-- 🎨 **Clean Code** - PSR-12 compliant, fully typed
+```
+QueryBuilder (Fluent API)
+  → typed Clause VOs (zero string work)
+    → QueryCompiler (stateless, cached)
+      → GrammarInterface (MySQL/MariaDB, PostgreSQL, SQLite)
+        → ConnectionManagerInterface (read/write routing)
 
----
+EntityRepository (single class)
+  → IdentityMap (same row → same object)
+    → UnitOfWork (batched writes)
+      → EntityHydrator (cached reflection)
+```
 
-## 📦 Installation
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Performance-first** | Structural SQL caching (xxh128), statement reuse, zero-copy bindings |
+| **4 DB engines** | MySQL, MariaDB, PostgreSQL, SQLite — full grammar implementations |
+| **Read/write routing** | Automatic: SELECTs → `read()`, DML → `write()` via `ConnectionManagerInterface` |
+| **PHP 8.4** | Property hooks, asymmetric visibility, readonly classes, backed enums |
+| **Identity map** | Same row always returns same object instance |
+| **Unit of Work** | `persist()` / `remove()` / `flush()` — batched writes in one transaction |
+| **Cursor pagination** | Constant-memory traversal of large datasets |
+| **CTE builder** | Standard and recursive CTEs across all 4 engines |
+| **Vector search** | pgvector, MySQL 9.x VEC_DISTANCE, with fallbacks |
+| **#[Scope] attribute** | Global and per-query scopes on repository methods |
+
+## Installation
 
 ```bash
-composer require monkeyscloud/monkeyslegion-query
+composer require monkeyscloud/monkeyslegion-query:2.x-dev
 ```
 
-Or add to your `composer.json`:
+## Quick Start
 
-```json
-{
-    "require": {
-        "monkeyscloud/monkeyslegion-query": "^1.0"
-    },
-    "autoload": {
-        "psr-4": {
-            "MonkeysLegion\\Query\\": "src/Query/",
-            "MonkeysLegion\\Repository\\": "src/Repository/"
-        }
-    }
-}
-```
-
----
-
-## 🚀 Quick Start
+### Query Builder
 
 ```php
-use MonkeysLegion\Database\MySQL\Connection;
-use MonkeysLegion\Query\QueryBuilder;
+use MonkeysLegion\Query\Query\QueryBuilder;
 
-// Initialize connection
-$conn = new Connection([
-    'dsn' => 'mysql:host=localhost;dbname=myapp',
-    'username' => 'root',
-    'password' => 'secret'
-]);
+// Inject ConnectionManagerInterface via DI
+$qb = new QueryBuilder($connectionManager);
 
-// Create query builder
-$qb = new QueryBuilder($conn);
-
-// Simple query
-$users = $qb->from('users')
-    ->where('status', '=', 'active')
-    ->orderBy('created_at', 'DESC')
-    ->limit(10)
-    ->fetchAll();
-
-// With joins
-$posts = $qb->from('posts', 'p')
-    ->leftJoin('users', 'u', 'u.id', '=', 'p.user_id')
-    ->leftJoin('categories', 'c', 'c.id', '=', 'p.category_id')
-    ->select(['p.*', 'u.name as author', 'c.name as category'])
-    ->where('p.published', '=', true)
-    ->fetchAll();
-```
-
----
-
-## 📚 Table of Contents
-
-- [Select Operations](#select-operations)
-- [Where Clauses](#where-clauses)
-- [Joins](#joins)
-- [Grouping & Ordering](#grouping--ordering)
-- [Aggregate Functions](#aggregate-functions)
-- [Insert, Update, Delete](#insert-update-delete)
-- [Fetch Operations](#fetch-operations)
-- [Transactions](#transactions)
-- [Advanced Features](#advanced-features)
-- [Repository Pattern](#repository-pattern)
-- [Using Observers](#using-observers)
-
----
-
-## 🔍 Select Operations
-
-### Basic SELECT
-
-```php
-// Select all columns
-$users = $qb->from('users')->fetchAll();
-
-// Select specific columns
+// SELECT
 $users = $qb->from('users')
     ->select(['id', 'name', 'email'])
-    ->fetchAll();
-
-// Select with alias
-$users = $qb->from('users')
-    ->selectAs('created_at', 'registered_date')
-    ->fetchAll();
-
-// Add columns to existing SELECT
-$qb->select(['id', 'name'])
-   ->addSelect(['email', 'phone']);
-```
-
-### SELECT with Expressions
-
-```php
-// Raw expressions
-$qb->selectRaw('COUNT(*) as total, DATE(created_at) as date');
-
-// Aggregate shortcuts
-$qb->from('orders')
-   ->selectSum('amount', 'total')
-   ->selectAvg('quantity', 'avg_qty')
-   ->selectMax('price', 'max_price');
-
-// CASE statements
-$qb->selectCase([
-    'status = "active"' => '"Active"',
-    'status = "pending"' => '"Pending"'
-], '"Unknown"', 'status_label');
-
-// CONCAT
-$qb->selectConcat(['first_name', 'last_name'], 'full_name', ' ');
-
-// JSON extraction (MySQL 5.7+)
-$qb->selectJson('settings', '$.theme', 'user_theme');
-```
-
-### Subqueries in SELECT
-
-```php
-// Using callback
-$qb->from('users', 'u')
-   ->selectSubQuery(function($sub) {
-       $sub->from('orders')
-           ->selectRaw('COUNT(*)')
-           ->whereRaw('orders.user_id = u.id');
-   }, 'order_count');
-
-// Raw subquery
-$qb->selectSub('SELECT COUNT(*) FROM orders WHERE user_id = users.id', 'order_count');
-```
-
-### DISTINCT
-
-```php
-// Regular DISTINCT
-$qb->from('users')->distinct()->select(['country']);
-
-// DISTINCT ON (PostgreSQL)
-$qb->from('events')->distinctOn(['user_id'])->orderBy('created_at', 'DESC');
-```
-
----
-
-## 🎯 Where Clauses
-
-### Basic WHERE
-
-```php
-// Simple where
-$qb->where('status', '=', 'active');
-$qb->where('age', '>', 18);
-
-// Multiple conditions (AND)
-$qb->where('status', '=', 'active')
-   ->where('verified', '=', true);
-
-// OR conditions
-$qb->where('role', '=', 'admin')
-   ->orWhere('role', '=', 'moderator');
-
-// AND/OR combined
-$qb->where('status', '=', 'active')
-   ->andWhere('age', '>=', 18)
-   ->orWhere('role', '=', 'admin');
-```
-
-### Advanced WHERE
-
-```php
-// WHERE IN
-$qb->whereIn('id', [1, 2, 3, 4, 5]);
-$qb->whereNotIn('status', ['deleted', 'banned']);
-
-// WHERE BETWEEN
-$qb->whereBetween('age', 18, 65);
-$qb->whereNotBetween('price', 100, 200);
-
-// WHERE NULL
-$qb->whereNull('deleted_at');
-$qb->whereNotNull('verified_at');
-
-// WHERE LIKE
-$qb->whereLike('email', '%@gmail.com');
-$qb->whereNotLike('name', '%test%');
-
-// Column comparisons
-$qb->whereColumn('updated_at', '>', 'created_at');
-
-// WHERE EXISTS
-$qb->whereExists('SELECT 1 FROM orders WHERE orders.user_id = users.id');
-```
-
-### Grouped WHERE
-
-```php
-// WHERE groups with AND
-$qb->where('status', '=', 'active')
-   ->whereGroup(function($q) {
-       $q->where('role', '=', 'admin')
-         ->orWhere('role', '=', 'moderator');
-   });
-// Produces: WHERE status = 'active' AND (role = 'admin' OR role = 'moderator')
-
-// OR WHERE groups
-$qb->where('age', '>=', 18)
-   ->orWhereGroup(function($q) {
-       $q->where('parent_consent', '=', true)
-         ->where('guardian_id', '!=', null);
-   });
-```
-
-### Date/Time WHERE
-
-```php
-// WHERE DATE
-$qb->whereDate('created_at', '=', '2024-01-01');
-
-// WHERE YEAR/MONTH/DAY
-$qb->whereYear('created_at', '=', 2024);
-$qb->whereMonth('created_at', '=', 1);
-$qb->whereDay('created_at', '=', 15);
-```
-
-### JSON WHERE (MySQL 5.7+)
-
-```php
-// JSON contains
-$qb->whereJsonContains('meta', '$.tags', 'php');
-
-// JSON extract
-$qb->whereJsonExtract('settings', '$.theme', '=', 'dark');
-
-// JSON length
-$qb->whereJsonLength('tags', '>', 3);
-```
-
-### Raw WHERE
-
-```php
-$qb->whereRaw('YEAR(created_at) = ?', [2024]);
-$qb->orWhereRaw('status IN (?, ?)', ['active', 'verified']);
-```
-
----
-
-## 🔗 Joins
-
-### Basic Joins
-
-```php
-// INNER JOIN
-$qb->from('posts', 'p')
-   ->innerJoin('users', 'u', 'u.id', '=', 'p.user_id');
-
-// LEFT JOIN
-$qb->from('users', 'u')
-   ->leftJoin('profiles', 'p', 'p.user_id', '=', 'u.id');
-
-// RIGHT JOIN
-$qb->rightJoin('orders', 'o', 'o.user_id', '=', 'u.id');
-
-// CROSS JOIN
-$qb->crossJoin('settings', 's');
-```
-
-### Multiple Conditions
-
-```php
-// Using callback
-$qb->from('orders', 'o')
-   ->leftJoinOn('items', 'i', function($join) {
-       $join->on('i.order_id', '=', 'o.id')
-            ->andOn('i.deleted_at', 'IS', 'NULL')
-            ->where('i.quantity', '>', 0, $this);
-   });
-```
-
-### Subquery Joins
-
-```php
-// Join to subquery
-$qb->from('users', 'u')
-   ->leftJoinSubQuery(function($sub) {
-       $sub->from('orders')
-           ->select(['user_id', 'COUNT(*) as order_count'])
-           ->groupBy('user_id');
-   }, 'oc', 'oc.user_id', '=', 'u.id');
-```
-
-### USING Joins
-
-```php
-// When column names match
-$qb->from('posts', 'p')
-   ->leftJoinUsing('categories', 'c', 'category_id');
-```
-
-### Self Joins
-
-```php
-// Join table to itself
-$qb->from('categories', 'c')
-   ->leftSelfJoin('parent', 'parent.id', '=', 'c.parent_id');
-```
-
-### Lateral Joins (PostgreSQL)
-
-```php
-$qb->from('users', 'u')
-   ->leftJoinLateral(
-       'SELECT * FROM posts WHERE user_id = u.id ORDER BY created_at DESC LIMIT 3',
-       'recent_posts'
-   );
-```
-
----
-
-## 📊 Grouping & Ordering
-
-### GROUP BY
-
-```php
-$qb->from('orders')
-   ->select(['user_id', 'COUNT(*) as order_count'])
-   ->groupBy('user_id');
-
-// Multiple columns
-$qb->groupBy('year', 'month', 'day');
-```
-
-### HAVING
-
-```php
-$qb->from('orders')
-   ->select(['user_id', 'COUNT(*) as total'])
-   ->groupBy('user_id')
-   ->having('COUNT(*)', '>', 5);
-
-// Raw HAVING
-$qb->havingRaw('SUM(amount) > ?', [1000]);
-```
-
-### ORDER BY
-
-```php
-// Single column
-$qb->orderBy('created_at', 'DESC');
-
-// Multiple columns
-$qb->orderBy('status', 'ASC')
-   ->orderBy('priority', 'DESC')
-   ->orderBy('created_at', 'DESC');
-
-// Raw ORDER BY
-$qb->orderByRaw('FIELD(status, "urgent", "high", "normal", "low")');
-$qb->orderByRaw('RAND()'); // Random order
-```
-
-### LIMIT & OFFSET
-
-```php
-$qb->limit(10)->offset(20); // Skip 20, take 10
-$qb->limit(5); // First 5 rows
-```
-
----
-
-## 📈 Aggregate Functions
-
-### Basic Aggregates
-
-```php
-// COUNT
-$total = $qb->from('users')->count();
-$active = $qb->from('users')->where('status', '=', 'active')->count();
-
-// SUM
-$revenue = $qb->from('orders')->sum('amount');
-
-// AVG
-$avgPrice = $qb->from('products')->avg('price');
-
-// MIN/MAX
-$minPrice = $qb->from('products')->min('price');
-$maxPrice = $qb->from('products')->max('price');
-```
-
-### Distinct Aggregates
-
-```php
-$uniqueCountries = $qb->from('users')->countDistinct('country');
-$uniqueRevenue = $qb->from('orders')->sumDistinct('amount');
-```
-
-### Statistical Functions
-
-```php
-// Standard deviation
-$stdDev = $qb->from('sales')->stdDev('amount');
-$stdDevPop = $qb->from('sales')->stdDevPop('amount');
-
-// Variance
-$variance = $qb->from('sales')->variance('amount');
-$varPop = $qb->from('sales')->varPop('amount');
-```
-
-### Conditional Aggregates
-
-```php
-// Count with condition
-$activeCount = $qb->from('users')->countWhere('status', '=', 'active');
-
-// Sum with condition
-$activeRevenue = $qb->from('orders')->sumWhere('amount', 'status', '=', 'paid');
-```
-
-### Existence Checks
-
-```php
-$exists = $qb->from('users')->where('email', '=', 'admin@example.com')->exists();
-$doesntExist = $qb->from('users')->where('id', '=', 999)->doesntExist();
-```
-
-### GROUP_CONCAT (MySQL)
-
-```php
-$tags = $qb->from('post_tags')
-    ->where('post_id', '=', 1)
-    ->groupConcat('tag_name', ', ', true); // Distinct, comma-separated
-```
-
----
-
-## ✏️ Insert, Update, Delete
-
-### INSERT
-
-```php
-// Single insert
-$userId = $qb->insert('users', [
-    'name' => 'John Doe',
-    'email' => 'john@example.com',
-    'status' => 'active'
+    ->where('status', '=', 'active')
+    ->where('age', '>', 18)
+    ->orderByDesc('created_at')
+    ->limit(25)
+    ->get();
+
+// First row
+$user = $qb->from('users')
+    ->where('email', '=', 'alice@example.com')
+    ->first();
+
+// Aggregates
+$count = $qb->from('orders')->where('status', '=', 'pending')->count();
+$total = $qb->from('orders')->sum('amount');
+
+// INSERT
+$id = $qb->from('users')->insert([
+    'name'  => 'Alice',
+    'email' => 'alice@example.com',
 ]);
 
-// Batch insert
-$count = $qb->insertBatch('users', [
-    ['name' => 'Alice', 'email' => 'alice@example.com'],
-    ['name' => 'Bob', 'email' => 'bob@example.com'],
-    ['name' => 'Carol', 'email' => 'carol@example.com']
-]);
-```
-
-### UPDATE
-
-```php
-// Update with WHERE
-$affected = $qb->update('users', [
-        'status' => 'inactive',
-        'updated_at' => date('Y-m-d H:i:s')
-    ])
-    ->where('last_login', '<', date('Y-m-d', strtotime('-1 year')))
-    ->execute();
-
-// Update all
-$affected = $qb->update('users', ['verified' => true])->execute();
-```
-
-### DELETE
-
-```php
-// Delete with WHERE
-$affected = $qb->delete('users')
-    ->where('status', '=', 'deleted')
-    ->where('deleted_at', '<', date('Y-m-d', strtotime('-30 days')))
-    ->execute();
-
-// Delete all (dangerous!)
-$affected = $qb->delete('users')->execute();
-```
-
-### Upsert / Insert or Update
-
-```php
-// Insert or update based on duplicate key (MySQL)
-$qb->custom(
-    "INSERT INTO users (id, name, email) VALUES (?, ?, ?) 
-     ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email)",
-    [1, 'John', 'john@example.com']
-)->execute();
-```
-
----
-
-## 📤 Fetch Operations
-
-### Basic Fetching
-
-```php
-// Fetch all as arrays
-$users = $qb->from('users')->fetchAll();
-
-// Fetch all as objects
-$users = $qb->from('users')->fetchAll(User::class);
-
-// Fetch first row
-$user = $qb->from('users')->where('id', '=', 1)->first();
-
-// Fetch first or fail
-$user = $qb->from('users')->where('id', '=', 1)->firstOrFail();
-
-// Fetch single value
-$name = $qb->from('users')->where('id', '=', 1)->value('name');
-
-// Fetch column as array
-$emails = $qb->from('users')->pluck('email');
-
-// Fetch key-value pairs
-$idNameMap = $qb->from('users')->pluck('name', 'id');
-// Result: [1 => 'John', 2 => 'Jane', ...]
-```
-
-### Find Operations
-
-```php
-// Find by ID
-$user = $qb->from('users')->find(1);
-
-// Find or fail
-$user = $qb->from('users')->findOrFail(1);
-
-// Find many by IDs
-$users = $qb->from('users')->findMany([1, 2, 3, 4, 5]);
-```
-
-### Advanced Fetching
-
-```php
-// Fetch as specific type
-$users = $qb->from('users')->fetchAllAssoc();
-$users = $qb->from('users')->fetchAllObjects();
-
-// Fetch indexed by key
-$usersById = $qb->from('users')->fetchIndexed('id');
-// Result: [1 => [...], 2 => [...], ...]
-
-// Fetch grouped by key
-$usersByCountry = $qb->from('users')->fetchGrouped('country');
-// Result: ['US' => [[...], [...]], 'UK' => [[...]], ...]
-```
-
-### Chunking & Streaming
-
-```php
-// Process in chunks (memory efficient)
-$qb->from('users')->chunk(100, function($users, $page) {
-    foreach ($users as $user) {
-        // Process each user
-    }
-    // Return false to stop
-});
-
-// Stream with cursor (generator)
-foreach ($qb->from('users')->cursor() as $user) {
-    // Process one at a time
-}
-
-// Lazy loading (chunks via generator)
-foreach ($qb->from('users')->lazy(1000) as $user) {
-    // Memory efficient iteration
-}
-
-// Process each row
-$qb->from('users')->each(function($user, $index) {
-    echo "Processing user {$index}: {$user['name']}\n";
-});
-```
-
-### Reusing the Builder
-
-By default, read operations (like `get`, `count`, `first`) do **not** reset the builder state. This allows you to chain multiple operations on the same query configuration.
-
-```php
-$qb->from('users')->where('active', 1);
-
-// Run count
-$count = $qb->count();
-
-// Run fetch (reuses the same WHERE clause)
-$users = $qb->fetchAll();
-```
-
-If you want to reuse the same builder instance for a completely new query, you must manually reset it:
-
-```php
-// First query
-$users = $qb->from('users')->where('active', 1)->fetchAll();
-
-// Reset state
-$qb->reset();
-
-// Second query
-$posts = $qb->from('posts')->where('published', 1)->fetchAll();
-```
-
-### Pagination
-
-```php
-// Full pagination (with total count)
-$result = $qb->from('posts')
-    ->where('published', '=', true)
-    ->paginate(page: 2, perPage: 15);
-
-// Result structure:
-// [
-//     'data' => [...],
-//     'total' => 150,
-//     'page' => 2,
-//     'perPage' => 15,
-//     'lastPage' => 10,
-//     'from' => 16,
-//     'to' => 30
-// ]
-
-// Simple pagination (no count, faster)
-$result = $qb->from('posts')->simplePaginate(1, 20);
-// Result: ['data' => [...], 'hasMore' => true, 'page' => 1, 'perPage' => 20]
-```
-
-### Transformations
-
-```php
-// Map results
-$names = $qb->from('users')->map(fn($user) => strtoupper($user['name']));
-
-// Filter results
-$adults = $qb->from('users')->filter(fn($user) => $user['age'] >= 18);
-
-// Reduce results
-$totalAge = $qb->from('users')->reduce(fn($carry, $user) => $carry + $user['age'], 0);
-```
-
----
-
-## 💾 Transactions
-
-### Basic Transactions
-
-```php
-// Manual control
-$qb->beginTransaction();
-try {
-    $qb->insert('users', ['name' => 'Alice']);
-    $qb->insert('profiles', ['user_id' => 1]);
-    $qb->commit();
-} catch (\Exception $e) {
-    $qb->rollback();
-    throw $e;
-}
-
-// Using callback
-$result = $qb->transaction(function($qb) {
-    $userId = $qb->insert('users', ['name' => 'Bob']);
-    $qb->insert('profiles', ['user_id' => $userId]);
-    return $userId;
-});
-```
-
-### Nested Transactions (Savepoints)
-
-```php
-$qb->beginTransactionNested(); // Level 1
-try {
-    $qb->insert('users', ['name' => 'Alice']);
-    
-    $qb->beginTransactionNested(); // Level 2 (creates savepoint)
-    try {
-        $qb->insert('profiles', ['user_id' => 1]);
-        $qb->commitNested(); // Releases savepoint
-    } catch (\Exception $e) {
-        $qb->rollbackNested(); // Rollback to savepoint
-    }
-    
-    $qb->commitNested();
-} catch (\Exception $e) {
-    $qb->rollbackNested();
-}
-```
-
-### Transaction with Retry
-
-```php
-// Automatically retry on deadlocks
-$result = $qb->transactionWithRetry(function($qb) {
-    $qb->update('accounts', ['balance' => 100])
-       ->where('id', '=', 1)
-       ->execute();
-}, attempts: 3, sleep: 100);
-```
-
-### Isolation Levels
-
-```php
-// Set isolation level
-$qb->setTransactionIsolation('SERIALIZABLE');
-$qb->beginTransaction();
-
-// Shortcuts
-$qb->readUncommitted()->beginTransaction();
-$qb->readCommitted()->beginTransaction();
-$qb->repeatableRead()->beginTransaction();
-$qb->serializable()->beginTransaction();
-```
-
-### Transaction Callbacks
-
-```php
-// After commit callback
-$qb->transaction(function($qb) {
-    $userId = $qb->insert('users', ['name' => 'Alice']);
-    
-    $qb->afterCommit(function() use ($userId) {
-        // Send welcome email
-        Mail::send('welcome', $userId);
-    });
-});
-
-// After rollback callback
-$qb->afterRollback(function() {
-    Log::error('Transaction failed');
-});
-```
-
-### Read-Only Transactions
-
-```php
-// Optimize read-only queries
-$qb->beginReadOnlyTransaction();
-$users = $qb->from('users')->fetchAll();
-$qb->commit();
-```
-
-### Advisory Locks
-
-```php
-// Acquire lock
-if ($qb->getLock('user_processing_123', timeout: 10)) {
-    // Do work
-    $qb->releaseLock('user_processing_123');
-}
-
-// Execute with lock
-$qb->withLock('invoice_generation', function($qb) {
-    // Generate invoice
-}, timeout: 30);
-```
-
----
-
-## 🔧 Advanced Features
-
-### Subqueries
-
-```php
-// FROM subquery
-$qb->fromSubQuery(function($sub) {
-    $sub->from('orders')
-        ->select(['user_id', 'COUNT(*) as order_count'])
-        ->groupBy('user_id');
-}, 'user_orders')
-->where('order_count', '>', 10);
-
-// WHERE subquery
+// UPDATE
 $qb->from('users')
-   ->whereExists(
-       'SELECT 1 FROM orders WHERE orders.user_id = users.id AND orders.status = ?',
-       ['completed']
-   );
+    ->where('id', '=', $id)
+    ->update(['status' => 'verified']);
+
+// DELETE
+$qb->from('sessions')
+    ->where('expired_at', '<', date('Y-m-d'))
+    ->delete();
 ```
 
-### UNION
+### Joins
 
 ```php
-$qb->from('customers')
-   ->select(['id', 'name', '"customer" as type'])
-   ->union(
-       'SELECT id, name, "supplier" as type FROM suppliers',
-       [],
-       all: false
-   );
+// Simple join
+$qb->from('users', 'u')
+    ->leftJoinOn('orders', 'u.id', '=', 'orders.user_id', 'o')
+    ->select(['u.name', 'o.total'])
+    ->get();
+
+// Complex join with callback
+$qb->from('users', 'u')
+    ->join('orders', fn($j) => $j
+        ->on('u.id', '=', 'o.user_id')
+        ->where('o.status', '=', 'completed'),
+        alias: 'o',
+    )
+    ->get();
 ```
 
-### Raw Queries
+### Where Clauses
 
 ```php
-// Execute raw query
-$results = $qb->raw('SELECT * FROM users WHERE created_at > ?', ['2024-01-01']);
-
-// Raw query with single result
-$user = $qb->rawOne('SELECT * FROM users WHERE id = ?', [1]);
-```
-
-### Custom SQL
-
-```php
-// Execute custom SQL with query builder features
-$qb->custom('SELECT * FROM users')
-   ->where('status', '=', 'active')
-   ->orderBy('created_at', 'DESC')
-   ->fetchAll();
-```
-
-### Query Introspection
-
-```php
-// Get generated SQL
-$sql = $qb->from('users')->where('id', '=', 1)->toSql();
-
-// Get bound parameters
-$params = $qb->getParams();
-
-// Debug query
-$qb->from('users')->where('id', '=', 1)->dump(); // Prints debug info
-$qb->from('users')->where('id', '=', 1)->dd();   // Dump and die
-```
-
-### Conditional Building
-
-```php
-// Conditional clauses
 $qb->from('users')
-   ->when($isAdmin, fn($q) => $q->select('*'))
-   ->unless($isAdmin, fn($q) => $q->select(['id', 'name']))
-   ->where('active', '=', true);
-
-// Conditional joins
-$qb->from('posts')
-   ->leftJoinWhen($includeAuthor, 'users', 'u', 'u.id', '=', 'posts.user_id');
+    ->where('status', '=', 'active')       // standard
+    ->orWhere('role', '=', 'admin')         // OR
+    ->whereIn('id', [1, 2, 3])             // IN
+    ->whereNotIn('status', ['banned'])     // NOT IN
+    ->whereBetween('age', 18, 65)          // BETWEEN
+    ->whereNull('deleted_at')              // IS NULL
+    ->whereNotNull('email')                // IS NOT NULL
+    ->get();
 ```
 
-### Query Duplication
+### Repository
 
 ```php
-// Clone query for reuse
-$baseQuery = $qb->from('users')->where('status', '=', 'active');
-
-$admins = $baseQuery->clone()->where('role', '=', 'admin')->fetchAll();
-$users = $baseQuery->clone()->where('role', '=', 'user')->fetchAll();
-```
-
-### Macros (Custom Methods)
-
-```php
-// Register custom macro
-QueryBuilder::macro('whereDateRange', function($column, $start, $end) {
-    return $this->whereBetween($column, $start, $end);
-});
-
-// Use macro
-$qb->from('orders')->whereDateRange('created_at', '2024-01-01', '2024-12-31');
-```
-
----
-
-## 🏗️ Repository Pattern
-
-### Creating a Repository
-
-```php
-namespace App\Repository;
-
-use MonkeysLegion\Repository\EntityRepository;
-use App\Entity\User;
+use MonkeysLegion\Query\Repository\EntityRepository;
 
 class UserRepository extends EntityRepository
 {
     protected string $table = 'users';
     protected string $entityClass = User::class;
-    
-    // Custom methods
-    public function findActive(): array
-    {
-        return $this->findBy(['status' => 'active']);
-    }
-    
-    public function findByEmail(string $email): ?User
-    {
-        return $this->findOneBy(['email' => $email]);
-    }
-    
-    public function getAdmins(): array
-    {
-        return $this->qb
-            ->from($this->table)
-            ->where('role', '=', 'admin')
-            ->orderBy('name', 'ASC')
-            ->fetchAll($this->entityClass);
-    }
 }
+
+// Find
+$user = $repo->find(1);
+$user = $repo->findOrFail(1);
+
+// Batch loading (single WHERE IN query)
+$users = $repo->findByIds([1, 2, 3]);
+
+// Criteria-based
+$admins = $repo->findBy(['role' => 'admin'], ['name' => 'ASC'], limit: 10);
+$alice  = $repo->findOneBy(['email' => 'alice@example.com']);
+
+// Unit of Work
+$user = new User();
+$user->name = 'Bob';
+$repo->persist($user);
+$repo->flush();  // INSERT in transaction
+
+// Cursor pagination (constant memory)
+$page = $repo->cursorPaginate(cursor: null, perPage: 25);
+// $page = ['data' => [...], 'nextCursor' => 26, 'hasMore' => true]
 ```
 
-### Built-in Repository Methods
+### Common Table Expressions
 
 ```php
-$userRepo = new UserRepository($qb);
+use MonkeysLegion\Query\Query\CteBuilder;
 
-// Find all
-$users = $userRepo->findAll();
+$cte = new CteBuilder();
+$cte->add('active_users', 'SELECT * FROM users WHERE status = ?', ['active']);
 
-// Find by ID
-$user = $userRepo->find(1);
-
-// Find by criteria
-$users = $userRepo->findBy(
-    ['status' => 'active', 'verified' => true],
-    ['created_at' => 'DESC'],
-    limit: 10,
-    offset: 0
+// Recursive CTE (tree structures)
+$cte->add(
+    name: 'category_tree',
+    sql: 'SELECT id, parent_id FROM categories WHERE id = ? '
+       . 'UNION ALL '
+       . 'SELECT c.id, c.parent_id FROM categories c '
+       . 'JOIN category_tree ct ON c.parent_id = ct.id',
+    bindings: [$rootId],
+    recursive: true,
 );
-
-// Find one by criteria
-$user = $userRepo->findOneBy(['email' => 'admin@example.com']);
-
-// Count
-$total = $userRepo->count();
-$active = $userRepo->count(['status' => 'active']);
-
-// Save (insert or update)
-$userId = $userRepo->save($user);
-
-// Delete
-$affected = $userRepo->delete(1);
 ```
 
-### Repository Factory
+### Vector Search
 
 ```php
-namespace MonkeysLegion\Repository;
+use MonkeysLegion\Query\Query\VectorSearch;
 
-use MonkeysLegion\Query\QueryBuilder;
+// Nearest neighbors using pgvector (PostgreSQL)
+$expr = VectorSearch::distance('embedding', $queryVector, DatabaseDriver::PostgreSQL);
+// Produces: embedding <-> '[1.0,2.0,3.0]'
 
-class RepositoryFactory
-{
-    public function __construct(private QueryBuilder $qb) {}
-    
-    /**
-     * @template T of EntityRepository
-     * @param class-string<T> $repoClass
-     * @return T
-     */
-    public function create(string $repoClass): object
-    {
-        return new $repoClass($this->qb);
-    }
-}
-
-// Usage
-$factory = new RepositoryFactory($qb);
-$userRepo = $factory->create(UserRepository::class);
+// Cosine similarity
+$expr = VectorSearch::distance('embedding', $vector, DatabaseDriver::PostgreSQL, 'cosine');
+// Produces: embedding <=> '[1.0,2.0,3.0]'
 ```
 
-### Dependency Injection Setup
-
-```php
-// In your DI container config
-use MonkeysLegion\Database\Factory\ConnectionFactory;
-use MonkeysLegion\Query\QueryBuilder;
-use MonkeysLegion\Repository\RepositoryFactory;
-
-return [
-    Connection::class => fn() => ConnectionFactory::create(require __DIR__.'/database.php'),
-    
-    QueryBuilder::class => fn($c) => new QueryBuilder(
-        $c->get(Connection::class)
-    ),
-    
-    RepositoryFactory::class => fn($c) => new RepositoryFactory(
-        $c->get(QueryBuilder::class)
-    ),
-    
-    // Individual repositories
-    UserRepository::class => fn($c) => new UserRepository(
-        $c->get(QueryBuilder::class)
-    ),
-];
-```
-
----
-
-## 👀 Using Observers
-
-Observers allow you to hook into the lifecycle events of your entities. You can attach an observer to an entity class using the `#[ObservedBy]` attribute.
-
-### 1. Create an Observer
-
-Extend the `EntityObserver` base class and override the methods you need:
-
-```php
-use MonkeysLegion\Entity\Observers\EntityObserver;
-
-class UserObserver extends EntityObserver
-{
-    public function creating(object $entity): void
-    {
-        // Set default values or hash passwords
-        echo "Creating user: " . $entity->getUsername();
-    }
-
-    public function hydrated(object $entity): void
-    {
-        // Perform actions after the entity is loaded from the database
-        echo "User hydrated!";
-    }
-}
-```
-
-### 2. Register the Observer on the Entity
-
-You can register a single observer or an array of observers:
-
-```php
-use MonkeysLegion\Entity\Attributes\Entity;
-use MonkeysLegion\Entity\Attributes\ObservedBy;
-
-#[Entity(table: 'users')]
-#[ObservedBy(UserObserver::class)] // Single observer
-class User
-{
-    // ...
-}
-
-#[Entity(table: 'posts')]
-#[ObservedBy([PostObserver::class, ActivityLogObserver::class])] // Multiple observers
-class Post
-{
-    // ...
-}
-```
-
-### Observer Lifecycle Events
-
-The following table describes when each observer method is triggered by the `EntityRepository`:
-
-| Event      | Triggered by         | When exactly?                                      |
-|------------|---------------------|----------------------------------------------------|
-| **saving**   | `save()`            | Triggered before an insert or update begins.       |
-| **creating** | `save()`            | Triggered before a record is inserted.             |
-| **created**  | `save()`            | Triggered after a record is successfully inserted.  |
-| **updating** | `save()`            | Triggered before an existing record is updated.      |
-| **updated**  | `save()`            | Triggered after an existing record is successfully changed. |
-| **saved**    | `save()`            | Triggered after the save operation (after `created` or `updated`). |
-| **deleting** | `delete()`          | Triggered before a record is deleted.               |
-| **deleted**  | `delete()`          | Triggered after a record is successfully deleted.   |
-| **hydrated** | entity hydrator      | Automatically triggered after an entity is loaded and hydrated. |
-
-All details about observers can be found in the [Observers documentation](https://monkeyslegion.com/docs/packages/entity).
-
-> [!TIP]
-> The **updated** event is only triggered if the database update resulted in at least one changed row (rowCount > 0). The **saved** event is always triggered regardless of actual differences.
-
----
-
-## 🎨 Best Practices
-
-### 1. Always Use Parameter Binding
-
-```php
-// ❌ BAD - SQL Injection risk
-$qb->whereRaw("email = '{$email}'");
-
-// ✅ GOOD - Safe parameter binding
-$qb->where('email', '=', $email);
-$qb->whereRaw('email = ?', [$email]);
-```
-
-### 2. Use Transactions for Related Operations
-
-```php
-// ✅ GOOD - Atomic operations
-$qb->transaction(function($qb) use ($orderData, $items) {
-    $orderId = $qb->insert('orders', $orderData);
-    
-    foreach ($items as $item) {
-        $item['order_id'] = $orderId;
-        $qb->insert('order_items', $item);
-    }
-    
-    return $orderId;
-});
-```
-
-### 3. Use Repositories for Business Logic
-
-```php
-// ✅ GOOD - Encapsulated logic
-class OrderRepository extends EntityRepository
-{
-    public function createOrder(array $orderData, array $items): int
-    {
-        return $this->qb->transaction(function($qb) use ($orderData, $items) {
-            $orderId = $qb->insert('orders', $orderData);
-            
-            foreach ($items as $item) {
-                $item['order_id'] = $orderId;
-                $qb->insert('order_items', $item);
-            }
-            
-            return $orderId;
-        });
-    }
-}
-```
-
-### 4. Use Chunking for Large Datasets
-
-```php
-// ✅ GOOD - Memory efficient
-$qb->from('users')->chunk(1000, function($users) {
-    foreach ($users as $user) {
-        // Process user
-    }
-});
-
-// ❌ BAD - Loads all into memory
-$users = $qb->from('users')->fetchAll();
-```
-
-### 5. Clone Queries for Reuse
-
-```php
-// ✅ GOOD - Reusable base query
-$activeUsers = $qb->from('users')->where('status', '=', 'active');
-
-$admins = $activeUsers->clone()->where('role', '=', 'admin')->fetchAll();
-$regular = $activeUsers->clone()->where('role', '=', 'user')->fetchAll();
-```
-
----
-
-## 🔒 Security
-
-### SQL Injection Protection
-
-MonkeysLegion Query Builder automatically protects against SQL injection through:
-
-1. **Automatic parameter binding** - All values are bound as PDO parameters
-2. **Unique placeholder generation** - Prevents parameter collision
-3. **Identifier quoting** - Table and column names are properly escaped
-
-```php
-// All of these are safe
-$qb->where('email', '=', $userInput);
-$qb->whereIn('id', $arrayFromUser);
-$qb->whereLike('name', $searchTerm);
-```
-
-### Safe Raw Queries
-
-When using raw SQL, always use parameter binding:
-
-```php
-// ✅ SAFE
-$qb->whereRaw('YEAR(created_at) = ?', [2024]);
-$qb->selectRaw('COUNT(CASE WHEN status = ? THEN 1 END) as count', ['active']);
-
-// ❌ UNSAFE
-$qb->whereRaw("YEAR(created_at) = {$year}"); // Don't do this!
-```
-
----
-
-## ⚡ Performance Tips
-
-### 1. Use Indexes
-
-```php
-// Ensure WHERE, JOIN, and ORDER BY columns are indexed
-$qb->from('users')
-   ->where('email', '=', $email)  // email should be indexed
-   ->orderBy('created_at', 'DESC'); // created_at should be indexed
-```
-
-### 2. Select Only Needed Columns
-
-```php
-// ✅ GOOD
-$qb->select(['id', 'name', 'email']);
-
-// ❌ BAD (if you don't need all columns)
-$qb->select('*');
-```
-
-### 3. Use EXISTS Instead of COUNT
-
-```php
-// ✅ FASTER for existence checks
-$exists = $qb->from('users')->where('email', '=', $email)->exists();
-
-// ❌ SLOWER
-$exists = $qb->from('users')->where('email', '=', $email)->count() > 0;
-```
-
-### 4. Eager Load Relationships
-
-```php
-// ✅ GOOD - Single query with joins
-$posts = $qb->from('posts', 'p')
-    ->leftJoin('users', 'u', 'u.id', '=', 'p.user_id')
-    ->select(['p.*', 'u.name as author_name'])
-    ->fetchAll();
-
-// ❌ BAD - N+1 query problem
-$posts = $qb->from('posts')->fetchAll();
-foreach ($posts as $post) {
-    $post->author = $qb->from('users')->find($post->user_id); // N queries!
-}
-```
-
-### 5. Use Pagination for Large Results
-
-```php
-// ✅ GOOD
-$result = $qb->from('posts')->paginate(1, 20);
-
-// ❌ BAD - Loads all rows
-$all = $qb->from('posts')->fetchAll();
-```
-
----
-
-## 🐛 Debugging
-
-### Query Debugging
-
-```php
-// Print query and continue
-$qb->from('users')->where('id', '=', 1)->dump();
-
-// Print query and exit
-$qb->from('users')->where('id', '=', 1)->dd();
-
-// Log query
-$qb->from('users')->where('id', '=', 1)->log('[UserQuery]');
-
-// Get SQL and params
-$sql = $qb->toSql();
-$params = $qb->getParams();
-```
-
-### Enable PDO Error Mode
-
-```php
-use MonkeysLegion\Database\MySQL\Connection;
-$conn = new Connection([
-    'dsn' => 'mysql:host=localhost;dbname=myapp',
-    'username' => 'root',
-    'password' => 'secret',
-    'options' => [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]
-]);
-```
-
----
-
-## 🧪 Testing
-
-### Example PHPUnit Test
-
-```php
-use PHPUnit\Framework\TestCase;
-use MonkeysLegion\Query\QueryBuilder;
-
-class UserRepositoryTest extends TestCase
-{
-    private QueryBuilder $qb;
-    
-    protected function setUp(): void
-    {
-        $this->qb = new QueryBuilder($this->createTestConnection());
-        $this->qb->beginTransaction();
-    }
-    
-    protected function tearDown(): void
-    {
-        $this->qb->rollback();
-    }
-    
-    public function testFindUser(): void
-    {
-        $userId = $this->qb->insert('users', [
-            'name' => 'Test User',
-            'email' => 'test@example.com'
-        ]);
-        
-        $user = $this->qb->from('users')->find($userId);
-        
-        $this->assertEquals('Test User', $user['name']);
-        $this->assertEquals('test@example.com', $user['email']);
-    }
-}
-```
-
----
-
-## 📖 API Reference
-
-### Complete Method List
-
-#### Select Operations
-
-- `select()`, `addSelect()`, `selectAs()`, `selectRaw()`
-- `selectSum()`, `selectAvg()`, `selectMin()`, `selectMax()`, `selectCount()`
-- `selectConcat()`, `selectCoalesce()`, `selectCase()`, `selectJson()`
-- `distinct()`, `distinctOn()`
-
-#### Where Clauses
-
-- `where()`, `andWhere()`, `orWhere()`, `whereRaw()`
-- `whereIn()`, `whereNotIn()`, `orWhereIn()`, `orWhereNotIn()`
-- `whereBetween()`, `whereNotBetween()`, `orWhereBetween()`
-- `whereNull()`, `whereNotNull()`, `orWhereNull()`, `orWhereNotNull()`
-- `whereLike()`, `whereNotLike()`, `orWhereLike()`
-- `whereExists()`, `whereNotExists()`, `orWhereExists()`
-- `whereColumn()`, `orWhereColumn()`
-- `whereDate()`, `whereYear()`, `whereMonth()`, `whereDay()`, `whereTime()`
-- `whereJsonContains()`, `whereJsonExtract()`, `whereJsonLength()`
-- `whereGroup()`, `orWhereGroup()`, `andWhereGroup()`
-
-#### Joins
-
-- `join()`, `innerJoin()`, `leftJoin()`, `rightJoin()`, `crossJoin()`
-- `fullOuterJoin()`, `leftOuterJoin()`, `rightOuterJoin()`
-- `joinOn()`, `innerJoinOn()`, `leftJoinOn()`, `rightJoinOn()`
-- `joinSub()`, `leftJoinSub()`, `rightJoinSub()`, `joinSubQuery()`
-- `joinUsing()`, `innerJoinUsing()`, `leftJoinUsing()`, `rightJoinUsing()`
-- `naturalJoin()`, `naturalLeftJoin()`, `naturalRightJoin()`
-- `joinLateral()`, `leftJoinLateral()`, `innerJoinLateral()`
-- `selfJoin()`, `leftSelfJoin()`
-
-#### Grouping & Ordering
-
-- `groupBy()`, `having()`, `havingRaw()`
-- `orderBy()`, `orderByRaw()`
-- `limit()`, `offset()`
-
-#### Aggregates
-
-- `count()`, `countDistinct()`, `countWhere()`
-- `sum()`, `sumDistinct()`, `sumWhere()`
-- `avg()`, `avgDistinct()`
-- `min()`, `max()`
-- `stdDev()`, `stdDevPop()`, `stdDevSamp()`
-- `variance()`, `varPop()`, `varSamp()`
-- `groupConcat()`
-- `exists()`, `doesntExist()`
-
-#### DML Operations
-
-- `insert()`, `insertBatch()`
-- `update()`, `delete()`
-- `execute()`, `executeRaw()`
-
-#### Fetch Operations
-
-- `fetchAll()`, `fetchAllAssoc()`, `fetchAllObjects()`
-- `fetch()`, `first()`, `firstAs()`, `firstOrFail()`
-- `find()`, `findOrFail()`, `findMany()`
-- `value()`, `pluck()`, `fetchPairs()`, `fetchIndexed()`, `fetchGrouped()`
-- `chunk()`, `cursor()`, `cursorAs()`, `each()`, `lazy()`
-- `paginate()`, `simplePaginate()`
-- `map()`, `filter()`, `reduce()`
-
-#### Transactions
-
-- `beginTransaction()`, `commit()`, `rollback()`
-- `transaction()`, `safeTransaction()`, `transactionWithRetry()`
-- `beginTransactionNested()`, `commitNested()`, `rollbackNested()`
-- `savepoint()`, `rollbackToSavepoint()`, `releaseSavepoint()`
-- `setTransactionIsolation()`, `readCommitted()`, `repeatableRead()`, `serializable()`
-- `getLock()`, `releaseLock()`, `withLock()`
-
-#### Utilities
-
-- `from()`, `fromSub()`, `fromSubQuery()`
-- `duplicate()`, `clone()`, `reset()`, `fresh()`
-- `toSql()`, `getParams()`, `dump()`, `dd()`, `log()`
-- `when()`, `unless()`, `tap()`
-
----
-
-## 📝 License
-
-MIT License - see [LICENSE](LICENSE) file for details
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## 📮 Support
-
-- **Documentation**: <https://monkeyslegion.com/docs/starter>
-- **Issues**: <https://github.com/MonkeysCloud/MonkeysLegion-Skeleton>
-- **Slack**: <https://join.slack.com/t/monkeyslegion/shared_invite/zt-36jut3kqo-WCwOabVrVrhHBln4xhMATA>
-
----
-
-## 🙏 Credits
-
-Created and maintained by [MonkeysCloud](https://github.com/monkeyscloud)
-
----
-
-**Built with ❤️ by the MonkeysLegion team**
-
-## Contributors
-
-<table>
-  <tr>
-    <td>
-      <a href="https://github.com/yorchperaza">
-        <img src="https://github.com/yorchperaza.png" width="100px;" alt="Jorge Peraza"/><br />
-        <sub><b>Jorge Peraza</b></sub>
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/Amanar-Marouane">
-        <img src="https://github.com/Amanar-Marouane.png" width="100px;" alt="Amanar Marouane"/><br />
-        <sub><b>Amanar Marouane</b></sub>
-      </a>
-    </td>
-  </tr>
-</table>
+## Performance
+
+| Metric | v1 | v2 |
+|--------|----|----|
+| Test suite (156 tests) | ~120ms | **41ms** |
+| Code size | 10,500 lines / 19 files | **3,600 lines / 24 files** |
+| Inheritance depth | 3 classes | **1 class** |
+| Schema queries at build | Per column | **Zero** |
+| SQL compilation | Every execution | **Cached (xxh128)** |
+| PDOStatement | New per query | **Cached per connection** |
+
+## Database Compatibility
+
+| Feature | MySQL 8+ | MariaDB 10.2+ | PostgreSQL | SQLite 3.35+ |
+|---------|----------|---------------|------------|-------------|
+| Query builder | ✅ | ✅ | ✅ | ✅ |
+| Upsert | ON DUPLICATE KEY | ON DUPLICATE KEY | ON CONFLICT | ON CONFLICT |
+| RETURNING | ❌ | ❌ | ✅ | ✅ |
+| JSON path | ->> | ->> | ->> / #>> | json_extract |
+| CTE | ✅ | ✅ | ✅ | ✅ |
+| Recursive CTE | ✅ | ✅ | ✅ | ✅ |
+| Vector search | VEC_DISTANCE* | ❌ | pgvector | ❌ |
+| Identifier quoting | \`backtick\` | \`backtick\` | "double" | "double" |
+
+## Requirements
+
+- PHP 8.4+
+- `monkeyscloud/monkeyslegion-database` v2
+- `monkeyscloud/monkeyslegion-entity` v1+
+- PDO extension
+
+## License
+
+MIT © [MonkeysCloud](https://github.com/MonkeysCloud)
