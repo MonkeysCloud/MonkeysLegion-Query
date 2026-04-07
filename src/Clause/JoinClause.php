@@ -40,7 +40,7 @@ final readonly class JoinClause implements ExpressionInterface
         }
 
         if ($this->conditions !== []) {
-            $sql .= ' ON ' . implode(' AND ', $this->conditions);
+            $sql .= ' ON ' . implode(' ', $this->conditions);
         }
 
         return $sql;
