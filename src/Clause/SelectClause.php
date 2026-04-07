@@ -24,6 +24,7 @@ final readonly class SelectClause implements ExpressionInterface
         public bool $distinct = false,
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         $cols = [];
@@ -34,13 +35,14 @@ final readonly class SelectClause implements ExpressionInterface
         return ($this->distinct ? 'DISTINCT ' : '') . implode(', ', $cols);
     }
 
+    #[\Override]
     public function getBindings(): array
     {
         $bindings = [];
 
         foreach ($this->columns as $col) {
             if ($col instanceof ExpressionInterface) {
-                $bindings = array_merge($bindings, $col->getBindings());
+                array_push($bindings, ...$col->getBindings());
             }
         }
 

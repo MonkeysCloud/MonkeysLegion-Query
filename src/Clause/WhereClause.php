@@ -32,10 +32,21 @@ final readonly class WhereClause implements ExpressionInterface
         private array $bindings = [],
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         $col = $this->column;
         $op  = $this->operator;
+
+        // Raw SQL fragment — $column already contains the full expression
+        if ($op === Operator::Raw) {
+            return $col;
+        }
+
+        // Grouped sub-conditions — $value holds list<WhereClause>
+        if ($op === Operator::Group) {
+            return '(' . self::renderGroup((array) $this->value) . ')';
+        }
 
         // IS NULL / IS NOT NULL — no value
         if (!$op->requiresValue()) {
@@ -66,8 +77,26 @@ final readonly class WhereClause implements ExpressionInterface
         return "{$col} {$op->value} ?";
     }
 
+    #[\Override]
     public function getBindings(): array
     {
+        // Raw operator: bindings supplied via constructor (may be empty)
+        if ($this->operator === Operator::Raw) {
+            return $this->bindings;
+        }
+
+        // Group operator: collect from nested clauses
+        if ($this->operator === Operator::Group) {
+            $result = [];
+            foreach ((array) $this->value as $nested) {
+                /** @var self $nested */
+                foreach ($nested->getBindings() as $b) {
+                    $result[] = $b;
+                }
+            }
+            return $result;
+        }
+
         if ($this->bindings !== []) {
             return $this->bindings;
         }
@@ -93,5 +122,25 @@ final readonly class WhereClause implements ExpressionInterface
         }
 
         return [$this->value];
+    }
+
+    /**
+     * Render a list of nested WhereClause objects as a space-separated SQL fragment
+     * (without the outer parentheses, which the caller adds).
+     *
+     * @param list<self> $clauses
+     */
+    private static function renderGroup(array $clauses): string
+    {
+        $parts = [];
+        foreach ($clauses as $i => $clause) {
+            $fragment = $clause->toSql();
+            if ($i === 0) {
+                $parts[] = $fragment;
+            } else {
+                $parts[] = $clause->boolean->value . ' ' . $fragment;
+            }
+        }
+        return implode(' ', $parts);
     }
 }

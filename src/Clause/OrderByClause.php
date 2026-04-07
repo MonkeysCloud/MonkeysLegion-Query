@@ -16,18 +16,26 @@ use MonkeysLegion\Query\Enums\SortDirection;
  */
 final readonly class OrderByClause implements ExpressionInterface
 {
+    /**
+     * @param string        $column   Column name or raw SQL expression.
+     * @param SortDirection $direction
+     * @param list<mixed>   $bindings Bound values (used for raw expressions like vector distances).
+     */
     public function __construct(
         public string $column,
         public SortDirection $direction = SortDirection::Asc,
+        private array $bindings = [],
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         return "{$this->column} {$this->direction->value}";
     }
 
+    #[\Override]
     public function getBindings(): array
     {
-        return [];
+        return $this->bindings;
     }
 }

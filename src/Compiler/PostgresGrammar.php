@@ -15,6 +15,7 @@ namespace MonkeysLegion\Query\Compiler;
  */
 final class PostgresGrammar implements GrammarInterface
 {
+    #[\Override]
     public function quoteIdentifier(string $identifier): string
     {
         if (str_contains($identifier, '.')) {
@@ -27,6 +28,7 @@ final class PostgresGrammar implements GrammarInterface
         return '"' . str_replace('"', '""', $identifier) . '"';
     }
 
+    #[\Override]
     public function compileLimit(?int $limit, ?int $offset): string
     {
         $sql = '';
@@ -42,6 +44,7 @@ final class PostgresGrammar implements GrammarInterface
         return $sql;
     }
 
+    #[\Override]
     public function compileUpsert(
         string $table,
         array $columns,
@@ -70,6 +73,7 @@ final class PostgresGrammar implements GrammarInterface
         return "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES ({$values}) ON CONFLICT {$conflict} DO UPDATE SET {$updates}";
     }
 
+    #[\Override]
     public function compileJsonPath(string $column, string $path): string
     {
         // PostgreSQL: column->>'key' for top-level, column#>>'{path,to,key}' for nested
@@ -83,11 +87,13 @@ final class PostgresGrammar implements GrammarInterface
         return "{$column}#>>{$pgPath}";
     }
 
+    #[\Override]
     public function supportsReturning(): bool
     {
         return true;
     }
 
+    #[\Override]
     public function compileReturning(array $columns): string
     {
         if ($columns === [] || $columns === ['*']) {
@@ -96,5 +102,31 @@ final class PostgresGrammar implements GrammarInterface
 
         $quoted = array_map(fn(string $c) => $this->quoteIdentifier($c), $columns);
         return 'RETURNING ' . implode(', ', $quoted);
+    }
+
+    #[\Override]
+    public function compileInsertOrIgnore(string $table, array $columns, array $placeholders): string
+    {
+        $quotedTable = $this->quoteIdentifier($table);
+        $quotedCols  = implode(', ', array_map(fn(string $c) => $this->quoteIdentifier($c), $columns));
+        $values      = implode(', ', $placeholders);
+
+        return "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES ({$values}) ON CONFLICT DO NOTHING";
+    }
+
+    #[\Override]
+    public function compileTruncate(string $table): string
+    {
+        return 'TRUNCATE TABLE ' . $this->quoteIdentifier($table);
+    }
+
+    #[\Override]
+    public function compileLock(string $mode, bool $noWait = false): string
+    {
+        $sql = $mode === 'share' ? 'FOR SHARE' : 'FOR UPDATE';
+        if ($noWait) {
+            $sql .= ' NOWAIT';
+        }
+        return $sql;
     }
 }

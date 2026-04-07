@@ -29,11 +29,13 @@ final readonly class RawExpression implements ExpressionInterface
         private array $bindings = [],
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         return $this->sql;
     }
 
+    #[\Override]
     public function getBindings(): array
     {
         return $this->bindings;

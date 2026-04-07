@@ -22,11 +22,13 @@ final readonly class GroupByClause implements ExpressionInterface
         public array $columns,
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         return implode(', ', $this->columns);
     }
 
+    #[\Override]
     public function getBindings(): array
     {
         return [];

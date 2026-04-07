@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace MonkeysLegion\Query\Repository;
 
 use MonkeysLegion\Database\Contracts\ConnectionManagerInterface;
+use MonkeysLegion\Query\Attributes\Scope;
 use MonkeysLegion\Query\Query\QueryBuilder;
 
 /**
@@ -34,23 +35,35 @@ abstract class EntityRepository
     private readonly UnitOfWork $unitOfWork;
     private readonly EntityHydrator $hydrator;
 
+    /**
+     * @var list<\ReflectionMethod>|null Cached global scope methods for this class.
+     */
+    private ?array $globalScopeMethods = null;
+
     public function __construct(
         private readonly ConnectionManagerInterface $manager,
         ?string $connectionName = null,
     ) {
-        $this->hydrator = new EntityHydrator();
+        $this->hydrator    = new EntityHydrator();
         $this->identityMap = new IdentityMap();
-        $this->unitOfWork = new UnitOfWork($this->manager, $this->identityMap, $this->hydrator);
+        $this->unitOfWork  = new UnitOfWork($this->manager, $this->identityMap, $this->hydrator);
     }
 
     // ── Query Builder Access ────────────────────────────────────
 
     /**
      * Get a fresh QueryBuilder scoped to this repository's table.
+     * Global scopes (methods annotated with #[Scope(isGlobal: true)]) are applied automatically.
      */
     public function query(): QueryBuilder
     {
-        return (new QueryBuilder($this->manager))->from($this->table);
+        $qb = (new QueryBuilder($this->manager))->from($this->table);
+
+        foreach ($this->getGlobalScopeMethods() as $method) {
+            $qb = $method->invoke($this, $qb) ?? $qb;
+        }
+
+        return $qb;
     }
 
     // ── Find ────────────────────────────────────────────────────
@@ -229,13 +242,16 @@ abstract class EntityRepository
 
     /**
      * Offset-based pagination.
+     * Uses a single base builder so WHERE conditions are shared between the count
+     * query and the data query — avoids the double query() call divergence (#24).
      *
      * @return array{data: list<TEntity>, total: int, page: int, perPage: int, lastPage: int}
      */
     public function paginate(int $page = 1, int $perPage = 15): array
     {
-        $total = $this->query()->count();
-        $rows = $this->query()
+        $base  = $this->query();
+        $total = (clone $base)->count();
+        $rows  = (clone $base)
             ->forPage($page, $perPage)
             ->orderBy('id')
             ->get();
@@ -245,7 +261,7 @@ abstract class EntityRepository
             'total'    => $total,
             'page'     => $page,
             'perPage'  => $perPage,
-            'lastPage' => (int) ceil($total / $perPage),
+            'lastPage' => (int) ceil($total / max(1, $perPage)),
         ];
     }
 
@@ -362,6 +378,53 @@ abstract class EntityRepository
         return $this->query()->where('id', '=', $id)->delete();
     }
 
+    /**
+     * Reload an entity from the database, refreshing the identity map entry.
+     *
+     * @param TEntity $entity
+     *
+     * @return TEntity The refreshed entity (same instance, updated values).
+     *
+     * @throws \RuntimeException If the entity has no ID or is no longer found.
+     */
+    public function refresh(object $entity): object
+    {
+        $id = $this->hydrator->getEntityId($entity);
+
+        if ($id === null) {
+            throw new \RuntimeException('Cannot refresh an entity without an ID.');
+        }
+
+        $row = (new QueryBuilder($this->manager))
+            ->from($this->table)
+            ->where('id', '=', $id)
+            ->first();
+
+        if ($row === null) {
+            throw new \RuntimeException(
+                "Entity {$this->entityClass} with id '{$id}' no longer exists.",
+            );
+        }
+
+        // Re-hydrate into the existing instance
+        $fieldMap = (new EntityHydrator())->dehydrate($entity);
+        $fresh    = $this->hydrator->hydrate($this->entityClass, $row);
+
+        // Copy fresh values onto the tracked instance via reflection
+        $ref = new \ReflectionClass($entity);
+        foreach ($ref->getProperties() as $prop) {
+            if ($prop->isInitialized($fresh)) {
+                $prop->setValue($entity, $prop->getValue($fresh));
+            }
+        }
+
+        // Update snapshot
+        $this->unitOfWork->snapshot($entity);
+        $this->identityMap->set($this->entityClass, $id, $entity);
+
+        return $entity;
+    }
+
     // ── Aggregates ──────────────────────────────────────────────
 
     /**
@@ -445,5 +508,36 @@ abstract class EntityRepository
     private function hydrateAll(array $rows): array
     {
         return array_map(fn(array $row) => $this->hydrateAndTrack($row), $rows);
+    }
+
+    /**
+     * Collect all methods on this class annotated with #[Scope(isGlobal: true)].
+     * Results are cached per repository class.
+     *
+     * @return list<\ReflectionMethod>
+     */
+    private function getGlobalScopeMethods(): array
+    {
+        if ($this->globalScopeMethods !== null) {
+            return $this->globalScopeMethods;
+        }
+
+        $this->globalScopeMethods = [];
+        $ref = new \ReflectionClass($this);
+
+        foreach ($ref->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            $attrs = $method->getAttributes(Scope::class);
+            if ($attrs === []) {
+                continue;
+            }
+
+            /** @var Scope $scope */
+            $scope = $attrs[0]->newInstance();
+            if ($scope->isGlobal) {
+                $this->globalScopeMethods[] = $method;
+            }
+        }
+
+        return $this->globalScopeMethods;
     }
 }

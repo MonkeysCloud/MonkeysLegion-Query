@@ -25,6 +25,7 @@ use MonkeysLegion\Query\RawExpression;
 use PDO;
 use PDOStatement;
 use Psr\SimpleCache\CacheInterface;
+use WeakMap;
 
 /**
  * MonkeysLegion Framework — Query Package
@@ -53,7 +54,8 @@ final class QueryBuilder
 
     private bool $distinct = false;
 
-    private string $fromTable = '';
+    /** @phpstan-ignore-next-line (asymmetric visibility read by external collaborators) */
+    public private(set) string $fromTable = '';
 
     /** @var list<JoinClause> */
     private array $joins = [];
@@ -75,34 +77,76 @@ final class QueryBuilder
     /** @var list<UnionClause> */
     private array $unions = [];
 
+    /** @var list<string> Columns for RETURNING clause (empty = disabled). */
+    private array $returningColumns = [];
+
+    /** @var 'update'|'share'|null Pessimistic lock mode. */
+    private ?string $lockMode = null;
+
+    private bool $lockNoWait = false;
+
+    /** CTE builder — null until first withCte() call. */
+    private ?CteBuilder $cteBuilder = null;
+
     // ── Caching ─────────────────────────────────────────────────
 
     private ?CacheInterface $resultCache = null;
     private int $resultCacheTtl = 60;
     private ?string $resultCacheKey = null;
 
-    /** @var array<string, PDOStatement> SQL hash → cached statement */
-    private static array $stmtCache = [];
+    /**
+     * PDOStatement cache keyed by connection object + SQL.
+     * Using WeakMap ensures stale entries are freed when the connection is GC'd (#3).
+     *
+     * @var \WeakMap<object, array<string, \PDOStatement>>|null
+     */
+    private static ?\WeakMap $stmtCache = null;
+
+    /** Maximum number of cached statements per connection. */
+    private const STMT_CACHE_MAX = 256;
 
     // ── Resolved State ──────────────────────────────────────────
 
-    private GrammarInterface $grammar;
+    /** @phpstan-ignore-next-line (asymmetric visibility read by external collaborators) */
+    public private(set) GrammarInterface $grammar;
+
     private string $resolvedName;
 
     // ── Computed Properties (PHP 8.4) ───────────────────────────
 
-    /** Total number of parameter bindings in the current query. */
+    /** Total number of parameter bindings in the current query (all clause types). */
     public int $bindingCount {
         get {
             $count = 0;
-            foreach ($this->wheres as $w) {
-                $count += count($w->getBindings());
+            // SELECT raw expression bindings
+            foreach ($this->selectColumns as $col) {
+                if ($col instanceof ExpressionInterface) {
+                    $count += count($col->getBindings());
+                }
             }
+            // CTE bindings
+            if ($this->cteBuilder !== null) {
+                $count += count($this->cteBuilder->getBindings());
+            }
+            // JOIN bindings
             foreach ($this->joins as $j) {
                 $count += count($j->getBindings());
             }
+            // WHERE bindings
+            foreach ($this->wheres as $w) {
+                $count += count($w->getBindings());
+            }
+            // HAVING bindings
             foreach ($this->havings as $h) {
                 $count += count($h->getBindings());
+            }
+            // ORDER BY bindings (vector distance expressions)
+            foreach ($this->orders as $o) {
+                $count += count($o->getBindings());
+            }
+            // UNION bindings
+            foreach ($this->unions as $u) {
+                $count += count($u->getBindings());
             }
             return $count;
         }
@@ -179,14 +223,14 @@ final class QueryBuilder
     /**
      * Add a join with callback-based conditions.
      *
-     * @param string                    $table    Table to join.
-     * @param callable(JoinBuilder): void $callback Join condition builder.
-     * @param string|null               $alias    Optional table alias.
-     * @param JoinType                  $type     Join type (default: INNER).
+     * @param string                      $table    Table to join.
+     * @param \Closure(JoinBuilder): void $callback Join condition builder.
+     * @param string|null                 $alias    Optional table alias.
+     * @param JoinType                    $type     Join type (default: INNER).
      */
     public function join(
         string $table,
-        callable $callback,
+        \Closure $callback,
         ?string $alias = null,
         JoinType $type = JoinType::Inner,
     ): self {
@@ -251,6 +295,14 @@ final class QueryBuilder
         return $this;
     }
 
+    /**
+     * Add a FULL OUTER JOIN.
+     */
+    public function fullJoin(string $table, \Closure $callback, ?string $alias = null): self
+    {
+        return $this->join($table, $callback, $alias, JoinType::Full);
+    }
+
     // ── WHERE ───────────────────────────────────────────────────
 
     /**
@@ -272,11 +324,44 @@ final class QueryBuilder
     }
 
     /**
+     * Add a WHERE EXISTS sub-query.
+     */
+    public function whereExists(ExpressionInterface $subQuery): self
+    {
+        $this->wheres[] = new WhereClause('', Operator::Exists, $subQuery, WhereBoolean::And);
+        return $this;
+    }
+
+    /**
+     * Add an OR WHERE EXISTS sub-query.
+     */
+    public function orWhereExists(ExpressionInterface $subQuery): self
+    {
+        $this->wheres[] = new WhereClause('', Operator::Exists, $subQuery, WhereBoolean::Or);
+        return $this;
+    }
+
+    /**
      * Add a WHERE IN condition.
      */
     public function whereIn(string $column, array $values): self
     {
+        if (!array_is_list($values)) {
+            throw new \InvalidArgumentException('whereIn() expects a list (sequential array).');
+        }
         $this->wheres[] = new WhereClause($column, Operator::In, $values, WhereBoolean::And);
+        return $this;
+    }
+
+    /**
+     * Add an OR WHERE IN condition.
+     */
+    public function orWhereIn(string $column, array $values): self
+    {
+        if (!array_is_list($values)) {
+            throw new \InvalidArgumentException('orWhereIn() expects a list (sequential array).');
+        }
+        $this->wheres[] = new WhereClause($column, Operator::In, $values, WhereBoolean::Or);
         return $this;
     }
 
@@ -285,7 +370,22 @@ final class QueryBuilder
      */
     public function whereNotIn(string $column, array $values): self
     {
+        if (!array_is_list($values)) {
+            throw new \InvalidArgumentException('whereNotIn() expects a list (sequential array).');
+        }
         $this->wheres[] = new WhereClause($column, Operator::NotIn, $values, WhereBoolean::And);
+        return $this;
+    }
+
+    /**
+     * Add an OR WHERE NOT IN condition.
+     */
+    public function orWhereNotIn(string $column, array $values): self
+    {
+        if (!array_is_list($values)) {
+            throw new \InvalidArgumentException('orWhereNotIn() expects a list (sequential array).');
+        }
+        $this->wheres[] = new WhereClause($column, Operator::NotIn, $values, WhereBoolean::Or);
         return $this;
     }
 
@@ -299,11 +399,29 @@ final class QueryBuilder
     }
 
     /**
+     * Add an OR WHERE BETWEEN condition.
+     */
+    public function orWhereBetween(string $column, mixed $min, mixed $max): self
+    {
+        $this->wheres[] = new WhereClause($column, Operator::Between, [$min, $max], WhereBoolean::Or);
+        return $this;
+    }
+
+    /**
      * Add a WHERE IS NULL condition.
      */
     public function whereNull(string $column): self
     {
         $this->wheres[] = new WhereClause($column, Operator::IsNull, null, WhereBoolean::And);
+        return $this;
+    }
+
+    /**
+     * Add an OR WHERE IS NULL condition.
+     */
+    public function orWhereNull(string $column): self
+    {
+        $this->wheres[] = new WhereClause($column, Operator::IsNull, null, WhereBoolean::Or);
         return $this;
     }
 
@@ -317,12 +435,42 @@ final class QueryBuilder
     }
 
     /**
-     * Add a WHERE EXISTS sub-query.
+     * Add an OR WHERE IS NOT NULL condition.
      */
-    public function whereExists(ExpressionInterface $subQuery): self
+    public function orWhereNotNull(string $column): self
     {
-        $this->wheres[] = new WhereClause('', Operator::Exists, $subQuery, WhereBoolean::And);
+        $this->wheres[] = new WhereClause($column, Operator::IsNotNull, null, WhereBoolean::Or);
         return $this;
+    }
+
+    /**
+     * Add grouped WHERE conditions wrapped in parentheses: AND (...)
+     *
+     * @param \Closure(self): void $callback Receives a fresh builder to accumulate inner conditions.
+     */
+    public function whereGroup(\Closure $callback, WhereBoolean $boolean = WhereBoolean::And): self
+    {
+        $inner = new self($this->manager, $this->resolvedName);
+        $callback($inner);
+
+        $this->wheres[] = new WhereClause(
+            column: '',
+            operator: Operator::Group,
+            value: $inner->wheres,
+            boolean: $boolean,
+        );
+
+        return $this;
+    }
+
+    /**
+     * Add grouped WHERE conditions wrapped in parentheses: OR (...)
+     *
+     * @param \Closure(self): void $callback
+     */
+    public function orWhereGroup(\Closure $callback): self
+    {
+        return $this->whereGroup($callback, WhereBoolean::Or);
     }
 
     /**
@@ -332,9 +480,24 @@ final class QueryBuilder
     {
         $this->wheres[] = new WhereClause(
             column: $sql,
-            operator: Operator::Equal,
+            operator: Operator::Raw,
             value: null,
             boolean: WhereBoolean::And,
+            bindings: $bindings,
+        );
+        return $this;
+    }
+
+    /**
+     * Add a raw OR WHERE expression.
+     */
+    public function orWhereRaw(string $sql, array $bindings = []): self
+    {
+        $this->wheres[] = new WhereClause(
+            column: $sql,
+            operator: Operator::Raw,
+            value: null,
+            boolean: WhereBoolean::Or,
             bindings: $bindings,
         );
         return $this;
@@ -393,7 +556,16 @@ final class QueryBuilder
      */
     public function having(string $expression, array $bindings = []): self
     {
-        $this->havings[] = new HavingClause($expression, $bindings);
+        $this->havings[] = new HavingClause($expression, $bindings, WhereBoolean::And);
+        return $this;
+    }
+
+    /**
+     * Add an OR HAVING clause.
+     */
+    public function orHaving(string $expression, array $bindings = []): self
+    {
+        $this->havings[] = new HavingClause($expression, $bindings, WhereBoolean::Or);
         return $this;
     }
 
@@ -445,6 +617,70 @@ final class QueryBuilder
         return $this->union($query, all: true);
     }
 
+    // ── CTE ─────────────────────────────────────────────────────
+
+    /**
+     * Add a Common Table Expression (WITH clause) to this query.
+     *
+     * @param string                    $name      CTE name.
+     * @param \Closure(self): self|void $callback  Receives a fresh QueryBuilder; the returned
+     *                                             (or mutated) builder is used as the CTE body.
+     * @param list<string>              $columns   Optional column aliases.
+     * @param bool                      $recursive Whether to emit WITH RECURSIVE.
+     */
+    public function withCte(
+        string $name,
+        \Closure $callback,
+        array $columns = [],
+        bool $recursive = false,
+    ): self {
+        $this->cteBuilder ??= new CteBuilder();
+
+        $inner = new self($this->manager, $this->resolvedName);
+        $returned = $callback($inner);
+        $cteQuery = ($returned instanceof self) ? $returned : $inner;
+
+        $this->cteBuilder->addFromBuilder($name, $cteQuery, $columns, $recursive);
+
+        return $this;
+    }
+
+    // ── RETURNING ───────────────────────────────────────────────
+
+    /**
+     * Specify columns to include in a RETURNING clause for INSERT/UPDATE/DELETE.
+     * Only emitted when the grammar supports it (PostgreSQL, SQLite 3.35+).
+     *
+     * @param list<string> $columns Columns to return, or ['*'] for all.
+     */
+    public function returning(array $columns = ['*']): self
+    {
+        $this->returningColumns = $columns;
+        return $this;
+    }
+
+    // ── Locking ─────────────────────────────────────────────────
+
+    /**
+     * Acquire an exclusive row lock: SELECT ... FOR UPDATE.
+     */
+    public function lockForUpdate(bool $noWait = false): self
+    {
+        $this->lockMode   = 'update';
+        $this->lockNoWait = $noWait;
+        return $this;
+    }
+
+    /**
+     * Acquire a shared row lock: SELECT ... FOR SHARE / LOCK IN SHARE MODE.
+     */
+    public function sharedLock(bool $noWait = false): self
+    {
+        $this->lockMode   = 'share';
+        $this->lockNoWait = $noWait;
+        return $this;
+    }
+
     // ── Caching ─────────────────────────────────────────────────
 
     /**
@@ -478,7 +714,12 @@ final class QueryBuilder
      */
     public function compile(): array
     {
-        return QueryCompiler::compileSelect(
+        $ctePrefix   = $this->cteBuilder?->toSql() ?: null;
+        $lockSuffix  = $this->lockMode !== null
+            ? $this->grammar->compileLock($this->lockMode, $this->lockNoWait)
+            : null;
+
+        $result = QueryCompiler::compileSelect(
             select: new SelectClause($this->selectColumns, $this->distinct),
             from: $this->fromTable,
             wheres: $this->wheres,
@@ -491,7 +732,16 @@ final class QueryBuilder
                 : null,
             unions: $this->unions,
             grammar: $this->grammar,
+            ctePrefix: $ctePrefix,
+            lockSuffix: ($lockSuffix !== '' ? $lockSuffix : null),
         );
+
+        // Prepend CTE bindings before the main query bindings
+        if ($this->cteBuilder !== null) {
+            $result['bindings'] = [...$this->cteBuilder->getBindings(), ...$result['bindings']];
+        }
+
+        return $result;
     }
 
     /**
@@ -503,7 +753,10 @@ final class QueryBuilder
     }
 
     /**
-     * Get the compiled SQL with bindings replaced (for debugging only).
+     * Get the compiled SQL with bindings replaced inline (for debugging only).
+     *
+     * @internal This method is intended for development use only.
+     *           Do NOT use the output of this method for actual database queries.
      */
     public function toDebugSql(): string
     {
@@ -511,11 +764,23 @@ final class QueryBuilder
         $sql = $compiled['sql'];
 
         foreach ($compiled['bindings'] as $value) {
-            $quoted = is_numeric($value) ? (string) $value : "'" . addslashes((string) $value) . "'";
             $pos = strpos($sql, '?');
-            if ($pos !== false) {
-                $sql = substr_replace($sql, $quoted, $pos, 1);
+            if ($pos === false) {
+                break;
             }
+
+            if ($value === null) {
+                $replacement = 'NULL';
+            } elseif (is_bool($value)) {
+                $replacement = $value ? '1' : '0';
+            } elseif (is_int($value) || is_float($value)) {
+                $replacement = (string) $value;
+            } else {
+                // Basic escaping for debug display — NOT safe for production use.
+                $replacement = "'" . str_replace(["\\", "'"], ["\\\\", "\\'"], (string) $value) . "'";
+            }
+
+            $sql = substr_replace($sql, $replacement, $pos, 1);
         }
 
         return $sql;
@@ -553,13 +818,13 @@ final class QueryBuilder
 
     /**
      * Execute a SELECT and return the first row.
+     * Uses an internal clone to avoid mutating $limitValue on the current builder.
      *
      * @return array<string, mixed>|null
      */
     public function first(): ?array
     {
-        $this->limitValue = 1;
-        $result = $this->get();
+        $result = (clone $this)->limit(1)->get();
         return $result[0] ?? null;
     }
 
@@ -584,11 +849,92 @@ final class QueryBuilder
 
     /**
      * Check if any rows exist matching the current query.
+     * Uses an internal clone to avoid mutating $limitValue on the current builder.
      */
     public function exists(): bool
     {
-        $this->limitValue = 1;
-        return $this->get() !== [];
+        return (clone $this)->limit(1)->get() !== [];
+    }
+
+    // ── Execution: Large-dataset traversal ─────────────────────
+
+    /**
+     * Process all rows in fixed-size batches, calling $callback per batch.
+     * Memory-efficient for large tables.
+     *
+     * @param \Closure(list<array<string, mixed>>): bool|void $callback Return false to stop early.
+     */
+    public function chunk(int $size, \Closure $callback): void
+    {
+        $page = 1;
+
+        do {
+            $rows = (clone $this)->forPage($page, $size)->get();
+            if ($rows === []) {
+                break;
+            }
+
+            $result = $callback($rows);
+            if ($result === false) {
+                break;
+            }
+
+            $page++;
+        } while (count($rows) === $size);
+    }
+
+    /**
+     * Yield all rows one-by-one using a server-side cursor pattern.
+     * Fetches rows in batches of $size internally to keep memory bounded.
+     *
+     * @param int $size Internal fetch batch size.
+     *
+     * @return \Generator<int, array<string, mixed>>
+     */
+    public function lazy(int $size = 1000): \Generator
+    {
+        $page = 1;
+
+        do {
+            $rows = (clone $this)->forPage($page, $size)->get();
+            foreach ($rows as $row) {
+                yield $row;
+            }
+            $page++;
+        } while (count($rows) === $size);
+    }
+
+    /**
+     * Process all rows in fixed-size batches ordered by a column ID, avoiding
+     * the OFFSET cost of standard chunk(). Suitable for tables with a monotonically
+     * increasing primary key.
+     *
+     * @param \Closure(list<array<string, mixed>>): bool|void $callback
+     * @param string $column The cursor column (default: 'id').
+     */
+    public function chunkById(int $size, \Closure $callback, string $column = 'id'): void
+    {
+        $lastId = null;
+
+        do {
+            $qb = (clone $this)->orderBy($column)->limit($size);
+
+            if ($lastId !== null) {
+                $qb->where($column, '>', $lastId);
+            }
+
+            $rows = $qb->get();
+            if ($rows === []) {
+                break;
+            }
+
+            $result = $callback($rows);
+            if ($result === false) {
+                break;
+            }
+
+            $lastId = end($rows)[$column] ?? null;
+        } while (count($rows) === $size && $lastId !== null);
     }
 
     // ── Execution: Aggregates ───────────────────────────────────
@@ -662,12 +1008,13 @@ final class QueryBuilder
 
     /**
      * Execute an INSERT.
+     * When a RETURNING clause is set and the grammar supports it, returns the fetched rows.
      *
      * @param array<string, mixed> $values Column => value pairs for a single row.
      *
-     * @return string|false The last insert ID (or false).
+     * @return string|false|list<array<string, mixed>> Last insert ID, false, or returned rows.
      */
-    public function insert(array $values): string|false
+    public function insert(array $values): string|false|array
     {
         $columns = array_keys($values);
         $compiled = QueryCompiler::compileInsert(
@@ -676,6 +1023,11 @@ final class QueryBuilder
             [array_values($values)],
             $this->grammar,
         );
+
+        if ($this->returningColumns !== [] && $this->grammar->supportsReturning()) {
+            $sql = $compiled['sql'] . ' ' . $this->grammar->compileReturning($this->returningColumns);
+            return $this->executeReadWrite($sql, $compiled['bindings']);
+        }
 
         $this->executeWrite($compiled['sql'], $compiled['bindings']);
 
@@ -693,6 +1045,10 @@ final class QueryBuilder
             return 0;
         }
 
+        if (!array_is_list($rows)) {
+            throw new \InvalidArgumentException('insertMany() expects a list (sequential array) of rows.');
+        }
+
         $columns = array_keys($rows[0]);
         $rowValues = array_map(fn(array $row) => array_values($row), $rows);
 
@@ -707,13 +1063,34 @@ final class QueryBuilder
     }
 
     /**
+     * Insert a row only if it does not conflict with existing data.
+     * Uses INSERT IGNORE (MySQL) or INSERT OR IGNORE (SQLite) or
+     * INSERT ... ON CONFLICT DO NOTHING (PostgreSQL).
+     *
+     * @param array<string, mixed> $values
+     */
+    public function insertOrIgnore(array $values): int
+    {
+        $columns = array_keys($values);
+        $compiled = QueryCompiler::compileInsertOrIgnore(
+            $this->fromTable,
+            $columns,
+            [array_values($values)],
+            $this->grammar,
+        );
+
+        return $this->executeWrite($compiled['sql'], $compiled['bindings']);
+    }
+
+    /**
      * Execute an UPDATE.
+     * When a RETURNING clause is set and the grammar supports it, returns the fetched rows.
      *
      * @param array<string, mixed> $values Column => value pairs.
      *
-     * @return int Number of affected rows.
+     * @return int|list<array<string, mixed>> Affected rows, or returned rows.
      */
-    public function update(array $values): int
+    public function update(array $values): int|array
     {
         $compiled = QueryCompiler::compileUpdate(
             $this->fromTable,
@@ -722,15 +1099,21 @@ final class QueryBuilder
             $this->grammar,
         );
 
+        if ($this->returningColumns !== [] && $this->grammar->supportsReturning()) {
+            $sql = $compiled['sql'] . ' ' . $this->grammar->compileReturning($this->returningColumns);
+            return $this->executeReadWrite($sql, $compiled['bindings']);
+        }
+
         return $this->executeWrite($compiled['sql'], $compiled['bindings']);
     }
 
     /**
      * Execute a DELETE.
+     * When a RETURNING clause is set and the grammar supports it, returns the fetched rows.
      *
-     * @return int Number of affected rows.
+     * @return int|list<array<string, mixed>> Affected rows, or returned rows.
      */
-    public function delete(): int
+    public function delete(): int|array
     {
         $compiled = QueryCompiler::compileDelete(
             $this->fromTable,
@@ -738,7 +1121,21 @@ final class QueryBuilder
             $this->grammar,
         );
 
+        if ($this->returningColumns !== [] && $this->grammar->supportsReturning()) {
+            $sql = $compiled['sql'] . ' ' . $this->grammar->compileReturning($this->returningColumns);
+            return $this->executeReadWrite($sql, $compiled['bindings']);
+        }
+
         return $this->executeWrite($compiled['sql'], $compiled['bindings']);
+    }
+
+    /**
+     * Truncate the table.
+     */
+    public function truncate(): void
+    {
+        $compiled = QueryCompiler::compileTruncate($this->fromTable, $this->grammar);
+        $this->executeWrite($compiled['sql'], []);
     }
 
     /**
@@ -768,6 +1165,37 @@ final class QueryBuilder
         return $this->executeWrite($compiled['sql'], $compiled['bindings']);
     }
 
+    // ── Vector Search ───────────────────────────────────────────
+
+    /**
+     * Add an ORDER BY nearest-neighbors expression for vector similarity search.
+     *
+     * Requires pgvector on PostgreSQL or MySQL 9.x. Throws on SQLite.
+     * The vector values are passed as bound parameters via OrderByClause bindings.
+     *
+     * @param string      $column  Vector column name.
+     * @param list<float> $vector  Query vector.
+     * @param int         $limit   Maximum number of neighbors to return.
+     * @param string      $metric  Distance metric: 'l2', 'cosine', 'inner_product'.
+     */
+    public function nearestNeighbors(
+        string $column,
+        array $vector,
+        int $limit = 10,
+        string $metric = 'l2',
+    ): self {
+        $driver = $this->manager->connection($this->resolvedName)->getDriver();
+        $expr   = VectorSearch::distance($column, $vector, $driver, $metric);
+
+        $this->orders[] = new OrderByClause(
+            column: $expr->toSql(),
+            direction: SortDirection::Asc,
+            bindings: $expr->getBindings(),
+        );
+
+        return $this->limit($limit);
+    }
+
     // ── Transaction Support ─────────────────────────────────────
 
     /**
@@ -775,11 +1203,11 @@ final class QueryBuilder
      *
      * @template T
      *
-     * @param callable(self): T $callback
+     * @param \Closure(self): T $callback
      *
      * @return T
      */
-    public function transaction(callable $callback): mixed
+    public function transaction(\Closure $callback): mixed
     {
         return $this->writeConnection()->transaction(fn() => $callback($this));
     }
@@ -801,28 +1229,32 @@ final class QueryBuilder
      */
     public function reset(): self
     {
-        $this->selectColumns = ['*'];
-        $this->distinct = false;
-        $this->joins = [];
-        $this->wheres = [];
-        $this->orders = [];
-        $this->groupBy = null;
-        $this->havings = [];
-        $this->limitValue = null;
-        $this->offsetValue = null;
-        $this->unions = [];
-        $this->resultCacheKey = null;
+        $this->selectColumns    = ['*'];
+        $this->distinct         = false;
+        $this->joins            = [];
+        $this->wheres           = [];
+        $this->orders           = [];
+        $this->groupBy          = null;
+        $this->havings          = [];
+        $this->limitValue       = null;
+        $this->offsetValue      = null;
+        $this->unions           = [];
+        $this->returningColumns = [];
+        $this->lockMode         = null;
+        $this->lockNoWait       = false;
+        $this->cteBuilder       = null;
+        $this->resultCacheKey   = null;
         return $this;
     }
 
     // ── Static Cache Management ─────────────────────────────────
 
     /**
-     * Clear the PDOStatement cache.
+     * Clear the PDOStatement cache (all connections).
      */
     public static function clearStatementCache(): void
     {
-        self::$stmtCache = [];
+        self::$stmtCache = null;
     }
 
     // ── Private: Connection Resolution ──────────────────────────
@@ -868,18 +1300,54 @@ final class QueryBuilder
     }
 
     /**
-     * Prepare a statement with caching.
+     * Execute a DML query on the write connection and fetch all returned rows
+     * (used for RETURNING clauses).
+     *
+     * @param list<mixed> $bindings
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function executeReadWrite(string $sql, array $bindings): array
+    {
+        $conn = $this->writeConnection();
+        $stmt = $conn->pdo()->prepare($sql);
+        $stmt->execute($bindings);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Prepare a statement with per-connection caching backed by WeakMap.
+     *
+     * WeakMap keys are the connection objects themselves, so entries are automatically
+     * freed when a connection is destroyed — eliminating stale spl_object_id reuse (#3).
+     * Per-connection cache is capped at STMT_CACHE_MAX entries via LRU eviction (#8).
      */
     private function prepareStatement(ConnectionInterface $conn, string $sql): PDOStatement
     {
-        $key = spl_object_id($conn) . ':' . $sql;
+        self::$stmtCache ??= new WeakMap();
 
-        if (isset(self::$stmtCache[$key])) {
-            return self::$stmtCache[$key];
+        /** @var array<string, PDOStatement> $perConn */
+        $perConn = self::$stmtCache[$conn] ?? [];
+
+        if (isset($perConn[$sql])) {
+            // Move to end (LRU: most recently used stays at back)
+            $stmt = $perConn[$sql];
+            unset($perConn[$sql]);
+            $perConn[$sql] = $stmt;
+            self::$stmtCache[$conn] = $perConn;
+            return $stmt;
+        }
+
+        // Evict oldest entry when cap reached
+        if (count($perConn) >= self::STMT_CACHE_MAX) {
+            reset($perConn);
+            $oldest = key($perConn);
+            unset($perConn[$oldest]);
         }
 
         $stmt = $conn->pdo()->prepare($sql);
-        self::$stmtCache[$key] = $stmt;
+        $perConn[$sql] = $stmt;
+        self::$stmtCache[$conn] = $perConn;
 
         return $stmt;
     }

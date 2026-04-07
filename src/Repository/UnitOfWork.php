@@ -104,15 +104,23 @@ final class UnitOfWork
         $counts = ['inserts' => 0, 'updates' => 0, 'deletes' => 0];
 
         $conn->transaction(function () use (&$counts): void {
-            $qbFactory = fn(string $table) => (new QueryBuilder($this->manager))->from($table);
+            // Reuse one QueryBuilder per table to avoid repeated instantiation (#10)
+            /** @var array<string, QueryBuilder> $builders */
+            $builders = [];
+            $getBuilder = function (string $table) use (&$builders): QueryBuilder {
+                if (!isset($builders[$table])) {
+                    $builders[$table] = (new QueryBuilder($this->manager))->from($table);
+                }
+                return $builders[$table];
+            };
 
             // Inserts
             foreach ($this->pendingInserts as $item) {
-                $qb = $qbFactory($item['table']);
+                $qb = $getBuilder($item['table'])->reset()->from($item['table']);
                 $id = $qb->insert($item['data']);
 
                 // Set the ID on the entity if auto-generated
-                if ($id !== false) {
+                if ($id !== false && !is_array($id)) {
                     $this->hydrator->setPropertyValue($item['entity'], 'id', (int) $id);
                     $entityId = (string) $id;
                 } else {
@@ -130,8 +138,9 @@ final class UnitOfWork
 
             // Updates
             foreach ($this->pendingUpdates as $item) {
-                $qb = $qbFactory($item['table']);
-                $qb->where('id', '=', $item['id'])->update($item['data']);
+                $getBuilder($item['table'])->reset()->from($item['table'])
+                    ->where('id', '=', $item['id'])
+                    ->update($item['data']);
 
                 // Refresh snapshot
                 $this->snapshot($item['entity']);
@@ -140,8 +149,10 @@ final class UnitOfWork
 
             // Deletes
             foreach ($this->pendingDeletes as $item) {
-                $qb = $qbFactory($item['table']);
-                $qb->where('id', '=', $item['id'])->delete();
+                $getBuilder($item['table'])->reset()->from($item['table'])
+                    ->where('id', '=', $item['id'])
+                    ->delete();
+
                 $counts['deletes']++;
             }
         });

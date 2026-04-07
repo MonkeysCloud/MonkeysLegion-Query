@@ -101,11 +101,7 @@ final class IdentityMap
      */
     public function count(): int
     {
-        $count = 0;
-        foreach ($this->entities as $classEntities) {
-            $count += count($classEntities);
-        }
-        return $count;
+        return array_sum(array_map('count', $this->entities));
     }
 
     /**

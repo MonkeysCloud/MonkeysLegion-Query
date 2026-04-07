@@ -16,6 +16,7 @@ namespace MonkeysLegion\Query\Compiler;
  */
 final class SqliteGrammar implements GrammarInterface
 {
+    #[\Override]
     public function quoteIdentifier(string $identifier): string
     {
         if (str_contains($identifier, '.')) {
@@ -28,6 +29,7 @@ final class SqliteGrammar implements GrammarInterface
         return '"' . str_replace('"', '""', $identifier) . '"';
     }
 
+    #[\Override]
     public function compileLimit(?int $limit, ?int $offset): string
     {
         $sql = '';
@@ -47,6 +49,7 @@ final class SqliteGrammar implements GrammarInterface
         return $sql;
     }
 
+    #[\Override]
     public function compileUpsert(
         string $table,
         array $columns,
@@ -75,6 +78,7 @@ final class SqliteGrammar implements GrammarInterface
         return "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES ({$values}) ON CONFLICT {$conflict} DO UPDATE SET {$updates}";
     }
 
+    #[\Override]
     public function compileJsonPath(string $column, string $path): string
     {
         // SQLite: json_extract(column, '$.path')
@@ -82,11 +86,13 @@ final class SqliteGrammar implements GrammarInterface
         return "json_extract({$column}, '{$jsonPath}')";
     }
 
+    #[\Override]
     public function supportsReturning(): bool
     {
         return true;
     }
 
+    #[\Override]
     public function compileReturning(array $columns): string
     {
         if ($columns === [] || $columns === ['*']) {
@@ -95,5 +101,29 @@ final class SqliteGrammar implements GrammarInterface
 
         $quoted = array_map(fn(string $c) => $this->quoteIdentifier($c), $columns);
         return 'RETURNING ' . implode(', ', $quoted);
+    }
+
+    #[\Override]
+    public function compileInsertOrIgnore(string $table, array $columns, array $placeholders): string
+    {
+        $quotedTable = $this->quoteIdentifier($table);
+        $quotedCols  = implode(', ', array_map(fn(string $c) => $this->quoteIdentifier($c), $columns));
+        $values      = implode(', ', $placeholders);
+
+        return "INSERT OR IGNORE INTO {$quotedTable} ({$quotedCols}) VALUES ({$values})";
+    }
+
+    #[\Override]
+    public function compileTruncate(string $table): string
+    {
+        // SQLite does not have TRUNCATE; DELETE FROM is equivalent
+        return 'DELETE FROM ' . $this->quoteIdentifier($table);
+    }
+
+    #[\Override]
+    public function compileLock(string $mode, bool $noWait = false): string
+    {
+        // SQLite does not support row-level locking modifiers
+        return '';
     }
 }

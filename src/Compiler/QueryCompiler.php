@@ -77,6 +77,8 @@ final class QueryCompiler
      * @param LimitOffsetClause|null $limit
      * @param list<UnionClause>      $unions
      * @param GrammarInterface       $grammar
+     * @param string|null            $ctePrefix  Pre-compiled WITH … clause (prepended to SQL).
+     * @param string|null            $lockSuffix  Pre-compiled FOR UPDATE / FOR SHARE clause.
      *
      * @return array{sql: string, bindings: list<mixed>}
      */
@@ -91,13 +93,18 @@ final class QueryCompiler
         ?LimitOffsetClause $limit = null,
         array $unions = [],
         GrammarInterface $grammar = new MySqlGrammar(),
+        ?string $ctePrefix = null,
+        ?string $lockSuffix = null,
     ): array {
         $bindings = [];
+
+        // Cache the SELECT sql fragment once to avoid double evaluation (#9)
+        $selectSql = $select->toSql();
 
         // Build structural key for cache hit detection
         $structKey = self::buildStructuralKey(
             'SELECT',
-            $select,
+            $selectSql,
             $from,
             $wheres,
             $joins,
@@ -106,17 +113,19 @@ final class QueryCompiler
             $havings,
             $limit,
             $unions,
+            $ctePrefix,
+            $lockSuffix,
         );
 
         // Check structural cache
         if (isset(self::$sqlCache[$structKey])) {
             $sql = self::$sqlCache[$structKey];
-            $bindings = self::collectBindings($select, $wheres, $joins, $havings, $unions);
+            $bindings = self::collectBindings($select, $wheres, $joins, $havings, $unions, $orders);
             return ['sql' => $sql, 'bindings' => $bindings];
         }
 
         // Build SQL
-        $sql = 'SELECT ' . $select->toSql();
+        $sql = 'SELECT ' . $selectSql;
         $sql .= " FROM {$from}";
 
         // JOINs
@@ -136,10 +145,7 @@ final class QueryCompiler
 
         // HAVING
         if ($havings !== []) {
-            $sql .= ' HAVING ' . implode(' AND ', array_map(
-                fn(HavingClause $h) => $h->toSql(),
-                $havings,
-            ));
+            $sql .= ' HAVING ' . self::compileHavings($havings);
         }
 
         // ORDER BY
@@ -163,11 +169,21 @@ final class QueryCompiler
             $sql .= ' ' . $union->toSql();
         }
 
+        // Locking
+        if ($lockSuffix !== null && $lockSuffix !== '') {
+            $sql .= ' ' . $lockSuffix;
+        }
+
+        // Prepend CTE
+        if ($ctePrefix !== null && $ctePrefix !== '') {
+            $sql = $ctePrefix . ' ' . $sql;
+        }
+
         // Cache the structural SQL
         self::$sqlCache[$structKey] = $sql;
 
         // Collect bindings
-        $bindings = self::collectBindings($select, $wheres, $joins, $havings, $unions);
+        $bindings = self::collectBindings($select, $wheres, $joins, $havings, $unions, $orders);
 
         return ['sql' => $sql, 'bindings' => $bindings];
     }
@@ -314,6 +330,64 @@ final class QueryCompiler
         return ['sql' => $sql, 'bindings' => $values];
     }
 
+    // ── INSERT OR IGNORE Compilation ────────────────────────────
+
+    /**
+     * Compile an INSERT OR IGNORE statement.
+     *
+     * @param string                $table
+     * @param list<string>          $columns
+     * @param list<list<mixed>>     $rows
+     * @param GrammarInterface      $grammar
+     *
+     * @return array{sql: string, bindings: list<mixed>}
+     */
+    public static function compileInsertOrIgnore(
+        string $table,
+        array $columns,
+        array $rows,
+        GrammarInterface $grammar = new MySqlGrammar(),
+    ): array {
+        $rowPlaceholders = [];
+        $bindings        = [];
+
+        foreach ($rows as $row) {
+            $rowPlaceholders[] = '(' . implode(', ', array_fill(0, count($row), '?')) . ')';
+            foreach ($row as $value) {
+                $bindings[] = $value;
+            }
+        }
+
+        // compileInsertOrIgnore handles one value tuple; for multi-row we fall back to
+        // building the statement manually using the per-grammar prefix.
+        $singlePlaceholder = $rowPlaceholders[0] ?? '()';
+        $baseSql = $grammar->compileInsertOrIgnore($table, $columns, array_fill(0, count($columns), '?'));
+
+        if (count($rows) === 1) {
+            return ['sql' => $baseSql, 'bindings' => $bindings];
+        }
+
+        // Multi-row: replace the single VALUES(...) with multiple tuples
+        $valuesPart = implode(', ', $rowPlaceholders);
+        $sql = (string) preg_replace('/VALUES \([^)]*\)$/', "VALUES {$valuesPart}", $baseSql);
+
+        return ['sql' => $sql, 'bindings' => $bindings];
+    }
+
+    // ── TRUNCATE Compilation ─────────────────────────────────────
+
+    /**
+     * Compile a TRUNCATE statement.
+     *
+     * @return array{sql: string, bindings: list<mixed>}
+     */
+    public static function compileTruncate(
+        string $table,
+        GrammarInterface $grammar = new MySqlGrammar(),
+    ): array {
+        return ['sql' => $grammar->compileTruncate($table), 'bindings' => []];
+    }
+
     // ── Private Helpers ─────────────────────────────────────────
 
     /**
@@ -339,6 +413,28 @@ final class QueryCompiler
     }
 
     /**
+     * Compile HAVING clauses respecting AND/OR booleans.
+     *
+     * @param list<HavingClause> $havings
+     */
+    private static function compileHavings(array $havings): string
+    {
+        $parts = [];
+
+        foreach ($havings as $i => $having) {
+            $fragment = $having->toSql();
+
+            if ($i === 0) {
+                $parts[] = $fragment;
+            } else {
+                $parts[] = $having->boolean->value . ' ' . $fragment;
+            }
+        }
+
+        return implode(' ', $parts);
+    }
+
+    /**
      * Collect all bindings from clause objects in correct order.
      *
      * @return list<mixed>
@@ -349,6 +445,7 @@ final class QueryCompiler
         array $joins,
         array $havings,
         array $unions,
+        array $orders = [],
     ): array {
         $bindings = [];
 
@@ -378,6 +475,13 @@ final class QueryCompiler
             }
         }
 
+        // Order by bindings (e.g. vector distance expressions)
+        foreach ($orders as $order) {
+            foreach ($order->getBindings() as $b) {
+                $bindings[] = $b;
+            }
+        }
+
         // Union bindings
         foreach ($unions as $union) {
             foreach ($union->getBindings() as $b) {
@@ -397,7 +501,7 @@ final class QueryCompiler
      */
     private static function buildStructuralKey(
         string $type,
-        SelectClause $select,
+        string $selectSql,
         string $from,
         array $wheres,
         array $joins,
@@ -406,9 +510,15 @@ final class QueryCompiler
         array $havings,
         ?LimitOffsetClause $limit,
         array $unions,
+        ?string $ctePrefix = null,
+        ?string $lockSuffix = null,
     ): string {
         // Build a compact structural fingerprint
-        $parts = [$type, $select->toSql(), $from];
+        $parts = [$type, $selectSql, $from];
+
+        if ($ctePrefix !== null) {
+            $parts[] = 'CTE:' . $ctePrefix;
+        }
 
         foreach ($joins as $j) {
             $parts[] = 'J:' . $j->type->value . ':' . $j->table . ':' . implode(',', $j->conditions);
@@ -423,11 +533,11 @@ final class QueryCompiler
         }
 
         foreach ($havings as $h) {
-            $parts[] = 'H:' . $h->expression;
+            $parts[] = 'H:' . $h->expression . ':' . $h->boolean->value;
         }
 
         foreach ($orders as $o) {
-            $parts[] = 'O:' . $o->column . ':' . $o->direction->value;
+            $parts[] = 'O:' . $o->column . ':' . $o->direction->value . ':' . count($o->getBindings());
         }
 
         if ($limit !== null) {
@@ -435,6 +545,10 @@ final class QueryCompiler
         }
 
         $parts[] = 'U:' . count($unions);
+
+        if ($lockSuffix !== null) {
+            $parts[] = 'LK:' . $lockSuffix;
+        }
 
         return hash('xxh128', implode('|', $parts));
     }

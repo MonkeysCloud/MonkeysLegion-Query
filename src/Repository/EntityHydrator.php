@@ -197,10 +197,12 @@ final class EntityHydrator
 
     /**
      * Convert camelCase property name to snake_case column name.
+     * Result is cached statically to avoid repeated regex per property per hydration.
      */
-    private function toSnakeCase(string $input): string
+    private static function toSnakeCase(string $input): string
     {
-        return strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $input));
+        static $cache = [];
+        return $cache[$input] ??= strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $input));
     }
 
     /**

@@ -15,6 +15,7 @@ enum JoinType: string
     case Left  = 'LEFT';
     case Right = 'RIGHT';
     case Cross = 'CROSS';
+    case Full  = 'FULL OUTER';
 
     /**
      * Human-readable label.
@@ -26,6 +27,7 @@ enum JoinType: string
             self::Left  => 'Left Join',
             self::Right => 'Right Join',
             self::Cross => 'Cross Join',
+            self::Full  => 'Full Outer Join',
         };
     }
 }

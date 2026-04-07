@@ -29,6 +29,10 @@ enum Operator: string
     case IsNotNull          = 'IS NOT NULL';
     case Exists             = 'EXISTS';
     case NotExists          = 'NOT EXISTS';
+    /** Raw SQL fragment — value already contains the full expression. */
+    case Raw                = 'RAW';
+    /** Grouped sub-conditions wrapped in parentheses. */
+    case Group              = 'GROUP';
 
     /**
      * Whether this operator expects a value (vs. IS NULL which does not).
@@ -36,8 +40,8 @@ enum Operator: string
     public function requiresValue(): bool
     {
         return match ($this) {
-            self::IsNull, self::IsNotNull => false,
-            default                       => true,
+            self::IsNull, self::IsNotNull, self::Raw, self::Group => false,
+            default => true,
         };
     }
 
@@ -54,13 +58,15 @@ enum Operator: string
 
     /**
      * Create from a loose string (case-insensitive, trims whitespace).
+     *
+     * @throws \InvalidArgumentException When the operator string is not recognised.
      */
     public static function fromLoose(string $value): self
     {
         $normalized = strtoupper(trim($value));
 
         // Handle common aliases
-        return match ($normalized) {
+        $known = match ($normalized) {
             '='              => self::Equal,
             '!=', '<>'       => self::NotEqual,
             '<'              => self::LessThan,
@@ -77,7 +83,20 @@ enum Operator: string
             'IS NOT NULL'    => self::IsNotNull,
             'EXISTS'         => self::Exists,
             'NOT EXISTS'     => self::NotExists,
-            default          => self::from($normalized),
+            default          => null,
         };
+
+        if ($known !== null) {
+            return $known;
+        }
+
+        try {
+            return self::from($normalized);
+        } catch (\ValueError) {
+            $valid = implode(', ', array_column(self::cases(), 'value'));
+            throw new \InvalidArgumentException(
+                "Unknown SQL operator '{$value}'. Valid operators: {$valid}",
+            );
+        }
     }
 }

@@ -7,16 +7,13 @@
   "prefer-stable": true,
   "repositories": [
     {
-      "type": "path",
-      "url": "../database",
-      "options": {
-        "symlink": true
-      }
+      "type": "vcs",
+      "url": "https://github.com/MonkeysCloud/MonkeysLegion-Database"
     }
   ],
   "require": {
     "php": "^8.4",
-    "monkeyscloud/monkeyslegion-database": "@dev",
+    "monkeyscloud/monkeyslegion-database": "dev-2.x-dev",
     "monkeyscloud/monkeyslegion-entity": "^1.0",
     "psr/simple-cache": "^3.0",
     "psr/log": "^3.0",

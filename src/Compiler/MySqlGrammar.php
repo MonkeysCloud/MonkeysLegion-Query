@@ -19,6 +19,7 @@ namespace MonkeysLegion\Query\Compiler;
  */
 final class MySqlGrammar implements GrammarInterface
 {
+    #[\Override]
     public function quoteIdentifier(string $identifier): string
     {
         // Handle dotted identifiers (schema.table or table.column)
@@ -32,6 +33,7 @@ final class MySqlGrammar implements GrammarInterface
         return '`' . str_replace('`', '``', $identifier) . '`';
     }
 
+    #[\Override]
     public function compileLimit(?int $limit, ?int $offset): string
     {
         $sql = '';
@@ -47,6 +49,7 @@ final class MySqlGrammar implements GrammarInterface
         return $sql;
     }
 
+    #[\Override]
     public function compileUpsert(
         string $table,
         array $columns,
@@ -66,6 +69,7 @@ final class MySqlGrammar implements GrammarInterface
         return "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES ({$values}) ON DUPLICATE KEY UPDATE {$updates}";
     }
 
+    #[\Override]
     public function compileJsonPath(string $column, string $path): string
     {
         // MySQL 5.7+ / MariaDB 10.2+: column->>'$.path'
@@ -73,13 +77,41 @@ final class MySqlGrammar implements GrammarInterface
         return "{$column}->>'{$jsonPath}'";
     }
 
+    #[\Override]
     public function supportsReturning(): bool
     {
         return false;
     }
 
+    #[\Override]
     public function compileReturning(array $columns): string
     {
         return '';
+    }
+
+    #[\Override]
+    public function compileInsertOrIgnore(string $table, array $columns, array $placeholders): string
+    {
+        $quotedTable = $this->quoteIdentifier($table);
+        $quotedCols  = implode(', ', array_map(fn(string $c) => $this->quoteIdentifier($c), $columns));
+        $values      = implode(', ', $placeholders);
+
+        return "INSERT IGNORE INTO {$quotedTable} ({$quotedCols}) VALUES ({$values})";
+    }
+
+    #[\Override]
+    public function compileTruncate(string $table): string
+    {
+        return 'TRUNCATE TABLE ' . $this->quoteIdentifier($table);
+    }
+
+    #[\Override]
+    public function compileLock(string $mode, bool $noWait = false): string
+    {
+        $sql = $mode === 'share' ? 'LOCK IN SHARE MODE' : 'FOR UPDATE';
+        if ($noWait) {
+            $sql .= ' NOWAIT';
+        }
+        return $sql;
     }
 }

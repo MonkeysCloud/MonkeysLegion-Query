@@ -20,6 +20,7 @@ final readonly class LimitOffsetClause implements ExpressionInterface
         public ?int $offset = null,
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         $sql = '';
@@ -35,6 +36,7 @@ final readonly class LimitOffsetClause implements ExpressionInterface
         return $sql;
     }
 
+    #[\Override]
     public function getBindings(): array
     {
         return [];
