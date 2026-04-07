@@ -1,0 +1,60 @@
+{
+  "name": "monkeyscloud/monkeyslegion-query",
+  "description": "Performance-first Query Builder & Micro-ORM for MonkeysLegion v2",
+  "type": "library",
+  "license": "MIT",
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../database",
+      "options": {
+        "symlink": true
+      }
+    }
+  ],
+  "require": {
+    "php": "^8.4",
+    "monkeyscloud/monkeyslegion-database": "@dev",
+    "monkeyscloud/monkeyslegion-entity": "^1.0",
+    "psr/simple-cache": "^3.0",
+    "psr/log": "^3.0",
+    "ext-pdo": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "MonkeysLegion\\Query\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/"
+    }
+  },
+  "extra": {
+    "branch-alias": {
+      "dev-main": "1.0.x-dev",
+      "dev-2.x-dev": "2.0.x-dev"
+    }
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^2.1",
+    "phpunit/phpunit": "^12.2",
+    "squizlabs/php_codesniffer": "^4.0"
+  },
+  "scripts": {
+    "test": "phpunit",
+    "test:unit": "phpunit --testsuite=Unit",
+    "test:integration": "phpunit --testsuite=Integration",
+    "test:coverage": "phpunit --coverage-html coverage",
+    "phpstan": "phpstan analyse src tests --level=8",
+    "cs": "phpcs --standard=PSR12 src tests",
+    "cs-fix": "phpcbf --standard=PSR12 src tests",
+    "check": [
+      "@cs",
+      "@phpstan",
+      "@test"
+    ]
+  }
+}
