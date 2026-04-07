@@ -407,8 +407,7 @@ abstract class EntityRepository
         }
 
         // Re-hydrate into the existing instance
-        $fieldMap = (new EntityHydrator())->dehydrate($entity);
-        $fresh    = $this->hydrator->hydrate($this->entityClass, $row);
+        $fresh = $this->hydrator->hydrate($this->entityClass, $row);
 
         // Copy fresh values onto the tracked instance via reflection
         $ref = new \ReflectionClass($entity);

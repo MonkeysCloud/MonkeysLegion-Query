@@ -1340,8 +1340,7 @@ final class QueryBuilder
 
         // Evict oldest entry when cap reached
         if (count($perConn) >= self::STMT_CACHE_MAX) {
-            reset($perConn);
-            $oldest = key($perConn);
+            $oldest = array_key_first($perConn);
             unset($perConn[$oldest]);
         }
 

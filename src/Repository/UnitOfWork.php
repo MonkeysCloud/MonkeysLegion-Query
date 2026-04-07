@@ -111,12 +111,14 @@ final class UnitOfWork
                 if (!isset($builders[$table])) {
                     $builders[$table] = (new QueryBuilder($this->manager))->from($table);
                 }
+                // Reset clauses but keep the FROM table
+                $builders[$table]->reset()->from($table);
                 return $builders[$table];
             };
 
             // Inserts
             foreach ($this->pendingInserts as $item) {
-                $qb = $getBuilder($item['table'])->reset()->from($item['table']);
+                $qb = $getBuilder($item['table']);
                 $id = $qb->insert($item['data']);
 
                 // Set the ID on the entity if auto-generated
@@ -138,7 +140,7 @@ final class UnitOfWork
 
             // Updates
             foreach ($this->pendingUpdates as $item) {
-                $getBuilder($item['table'])->reset()->from($item['table'])
+                $getBuilder($item['table'])
                     ->where('id', '=', $item['id'])
                     ->update($item['data']);
 
@@ -149,7 +151,7 @@ final class UnitOfWork
 
             // Deletes
             foreach ($this->pendingDeletes as $item) {
-                $getBuilder($item['table'])->reset()->from($item['table'])
+                $getBuilder($item['table'])
                     ->where('id', '=', $item['id'])
                     ->delete();
 
