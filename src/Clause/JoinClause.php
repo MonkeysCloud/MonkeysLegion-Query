@@ -31,6 +31,7 @@ final readonly class JoinClause implements ExpressionInterface
         private array $bindings = [],
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         $sql = "{$this->type->value} JOIN {$this->table}";
@@ -46,6 +47,7 @@ final readonly class JoinClause implements ExpressionInterface
         return $sql;
     }
 
+    #[\Override]
     public function getBindings(): array
     {
         return $this->bindings;

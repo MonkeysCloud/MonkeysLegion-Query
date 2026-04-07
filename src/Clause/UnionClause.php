@@ -26,11 +26,13 @@ final readonly class UnionClause implements ExpressionInterface
         public bool $all = false,
     ) {}
 
+    #[\Override]
     public function toSql(): string
     {
         return ($this->all ? 'UNION ALL ' : 'UNION ') . $this->sql;
     }
 
+    #[\Override]
     public function getBindings(): array
     {
         return $this->bindings;

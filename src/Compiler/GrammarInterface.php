@@ -61,4 +61,26 @@ interface GrammarInterface
      * @param list<string> $columns Columns to return.
      */
     public function compileReturning(array $columns): string;
+
+    /**
+     * Compile an INSERT OR IGNORE / INSERT IGNORE statement.
+     *
+     * @param string       $table
+     * @param list<string> $columns
+     * @param list<string> $placeholders
+     */
+    public function compileInsertOrIgnore(string $table, array $columns, array $placeholders): string;
+
+    /**
+     * Compile a TRUNCATE TABLE statement.
+     */
+    public function compileTruncate(string $table): string;
+
+    /**
+     * Compile a pessimistic locking modifier.
+     *
+     * @param 'update'|'share' $mode     Lock mode.
+     * @param bool             $noWait   Whether to add NOWAIT.
+     */
+    public function compileLock(string $mode, bool $noWait = false): string;
 }

@@ -98,6 +98,7 @@ final class CteBuilder implements ExpressionInterface
         return false;
     }
 
+    #[\Override]
     public function toSql(): string
     {
         if ($this->ctes === []) {
@@ -119,6 +120,7 @@ final class CteBuilder implements ExpressionInterface
         return 'WITH ' . $recursive . implode(', ', $parts);
     }
 
+    #[\Override]
     public function getBindings(): array
     {
         $bindings = [];

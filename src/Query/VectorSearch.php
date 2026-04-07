@@ -5,6 +5,7 @@ namespace MonkeysLegion\Query\Query;
 
 use MonkeysLegion\Database\Types\DatabaseDriver;
 use MonkeysLegion\Query\Contracts\ExpressionInterface;
+use MonkeysLegion\Query\RawExpression;
 
 /**
  * MonkeysLegion Framework — Query Package
@@ -12,12 +13,11 @@ use MonkeysLegion\Query\Contracts\ExpressionInterface;
  * Vector similarity search builder.
  *
  * Pushes vector distance computation to the database engine:
- *   - PostgreSQL: pgvector `<->` (L2), `<=>` (cosine), `<#>` (inner product)
- *   - MySQL 9.x: VEC_DISTANCE_L2(), VEC_DISTANCE_COSINE()
- *   - SQLite: Falls back to PHP-computed cosine similarity (via raw SQL expression)
+ *   - PostgreSQL: pgvector `<->` (L2), `<=>` (cosine), `<#>` (inner product) — bound as a typed parameter
+ *   - MySQL 9.x: VEC_DISTANCE_L2(), VEC_DISTANCE_COSINE() — bound as JSON-encoded parameter
+ *   - SQLite: Throws UnsupportedDriverException (no suitable extension in stdlib)
  *
- * Usage:
- *   $qb->nearestNeighbors('embedding', $queryVector, limit: 10)
+ * All user-supplied vector values are passed as bound parameters; no interpolation occurs.
  *
  * @copyright 2026 MonkeysCloud Team
  * @license   MIT
@@ -27,12 +27,15 @@ final class VectorSearch
     /**
      * Build a nearest-neighbor ORDER BY expression.
      *
-     * @param string            $column   Vector column name.
+     * @param string            $column   Vector column name (must be a valid SQL identifier).
      * @param list<float>       $vector   Query vector.
      * @param DatabaseDriver    $driver   Target database driver.
      * @param string            $metric   Distance metric: 'l2', 'cosine', 'inner_product'.
      *
      * @return ExpressionInterface Order-by expression for nearest neighbors.
+     *
+     * @throws \InvalidArgumentException On invalid column name or non-float vector values.
+     * @throws \RuntimeException         On unsupported driver (SQLite).
      */
     public static function distance(
         string $column,
@@ -40,56 +43,87 @@ final class VectorSearch
         DatabaseDriver $driver,
         string $metric = 'l2',
     ): ExpressionInterface {
-        $vectorStr = '[' . implode(',', $vector) . ']';
+        self::validateIdentifier($column);
+        self::validateVector($vector);
 
         return match ($driver) {
-            DatabaseDriver::PostgreSQL => self::pgvectorDistance($column, $vectorStr, $metric),
-            DatabaseDriver::MySQL     => self::mysqlDistance($column, $vectorStr, $metric),
-            DatabaseDriver::SQLite    => self::sqliteDistance($column, $vector, $metric),
+            DatabaseDriver::PostgreSQL => self::pgvectorDistance($column, $vector, $metric),
+            DatabaseDriver::MySQL      => self::mysqlDistance($column, $vector, $metric),
+            DatabaseDriver::SQLite     => throw new \RuntimeException(
+                'Vector search is not supported on SQLite. Use PostgreSQL with pgvector or MySQL 9.x.',
+            ),
         };
     }
 
     /**
      * PostgreSQL pgvector distance expression.
+     * Uses a bound parameter cast to ::vector to avoid SQL injection.
+     *
+     * @param list<float> $vector
      */
-    private static function pgvectorDistance(string $column, string $vectorStr, string $metric): ExpressionInterface
+    private static function pgvectorDistance(string $column, array $vector, string $metric): ExpressionInterface
     {
         $operator = match ($metric) {
             'cosine'        => '<=>',
             'inner_product' => '<#>',
-            default         => '<->', // l2
+            default         => '<->',  // l2
         };
 
-        return new \MonkeysLegion\Query\RawExpression("{$column} {$operator} '{$vectorStr}'");
+        // Bind the vector as '[x,y,z]'::vector — parameterized, not interpolated.
+        $vectorStr = '[' . implode(',', $vector) . ']';
+
+        return new RawExpression("{$column} {$operator} ?::vector", [$vectorStr]);
     }
 
     /**
      * MySQL 9.x vector distance function.
+     * Binds the vector as a JSON-encoded string parameter.
+     *
+     * @param list<float> $vector
      */
-    private static function mysqlDistance(string $column, string $vectorStr, string $metric): ExpressionInterface
+    private static function mysqlDistance(string $column, array $vector, string $metric): ExpressionInterface
     {
         $func = match ($metric) {
             'cosine' => 'VEC_DISTANCE_COSINE',
             default  => 'VEC_DISTANCE_L2',
         };
 
-        return new \MonkeysLegion\Query\RawExpression("{$func}({$column}, '{$vectorStr}')");
+        $vectorJson = json_encode($vector, JSON_THROW_ON_ERROR);
+
+        return new RawExpression("{$func}({$column}, ?)", [$vectorJson]);
     }
 
     /**
-     * SQLite fallback: cosine similarity via SQL expression.
-     * This is not performant for large datasets but works for development/testing.
+     * Validate that a column name is a safe SQL identifier.
+     *
+     * @throws \InvalidArgumentException
      */
-    private static function sqliteDistance(string $column, array $vector, string $metric): ExpressionInterface
+    private static function validateIdentifier(string $column): void
     {
-        // For SQLite, we compute cosine similarity in SQL using json_each
-        // This is a simplified fallback; for production, use an extension
-        $magnitude = sqrt(array_sum(array_map(fn(float $v) => $v * $v, $vector)));
-        $vectorJson = json_encode($vector);
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+            throw new \InvalidArgumentException(
+                "Invalid column identifier for VectorSearch: '{$column}'.",
+            );
+        }
+    }
 
-        // Approximate using raw expression (for small datasets / dev only)
-        return new \MonkeysLegion\Query\RawExpression(
-            "1.0 /* sqlite_vector_placeholder: {$column} */",
-        );
+    /**
+     * Validate that every element in the vector is a scalar numeric value.
+     *
+     * @throws \InvalidArgumentException
+     */
+    private static function validateVector(array $vector): void
+    {
+        if ($vector === []) {
+            throw new \InvalidArgumentException('Vector must not be empty.');
+        }
+
+        foreach ($vector as $i => $value) {
+            if (!is_int($value) && !is_float($value)) {
+                throw new \InvalidArgumentException(
+                    "Vector element at index {$i} is not a numeric scalar.",
+                );
+            }
+        }
     }
 }

@@ -16,13 +16,17 @@ enum SortDirection: string
 
     /**
      * Create from a loose string (case-insensitive).
+     *
+     * @throws \InvalidArgumentException When the direction string is not 'ASC' or 'DESC'.
      */
     public static function fromLoose(string $value): self
     {
         return match (strtoupper(trim($value))) {
-            'ASC'  => self::Asc,
-            'DESC' => self::Desc,
-            default => self::Asc,
+            'ASC'   => self::Asc,
+            'DESC'  => self::Desc,
+            default => throw new \InvalidArgumentException(
+                "Invalid sort direction '{$value}'. Expected 'ASC' or 'DESC'.",
+            ),
         };
     }
 }
