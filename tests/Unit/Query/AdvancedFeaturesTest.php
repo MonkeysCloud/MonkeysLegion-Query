@@ -74,7 +74,8 @@ final class AdvancedFeaturesTest extends TestCase
     {
         $expr = VectorSearch::distance('embedding', [1.0, 2.0, 3.0], DatabaseDriver::PostgreSQL);
         self::assertStringContainsString('<->', $expr->toSql());
-        self::assertStringContainsString('[1,2,3]', $expr->toSql());
+        self::assertStringContainsString('?::vector', $expr->toSql());
+        self::assertSame(['[1,2,3]'], $expr->getBindings());
     }
 
     public function testPostgresCosineDistance(): void
@@ -101,11 +102,10 @@ final class AdvancedFeaturesTest extends TestCase
         self::assertStringContainsString('VEC_DISTANCE_COSINE', $expr->toSql());
     }
 
-    public function testSqliteFallback(): void
+    public function testSqliteThrowsOnVectorSearch(): void
     {
-        $expr = VectorSearch::distance('embedding', [1.0, 2.0], DatabaseDriver::SQLite);
-        // SQLite doesn't have native vector support — returns placeholder
-        self::assertNotEmpty($expr->toSql());
+        $this->expectException(\RuntimeException::class);
+        VectorSearch::distance('embedding', [1.0, 2.0], DatabaseDriver::SQLite);
     }
 
     // ── Scope Attribute ─────────────────────────────────────────

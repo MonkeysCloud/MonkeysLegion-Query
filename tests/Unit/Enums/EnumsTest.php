@@ -53,8 +53,13 @@ final class EnumsTest extends TestCase
             ['asc', SortDirection::Asc],
             ['DESC', SortDirection::Desc],
             [' Asc ', SortDirection::Asc],
-            ['invalid', SortDirection::Asc],
         ];
+    }
+
+    public function testSortDirectionFromLooseThrowsOnInvalid(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SortDirection::fromLoose('invalid');
     }
 
     // ── WhereBoolean ────────────────────────────────────────────
