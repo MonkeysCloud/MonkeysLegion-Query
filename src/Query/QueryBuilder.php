@@ -191,6 +191,27 @@ final class QueryBuilder
     }
 
     /**
+     * Add a sub-query as a SELECT column.
+     *
+     * @param \Closure(self): self|void $callback Receives a fresh builder.
+     * @param string                    $as       Column alias for the sub-query result.
+     */
+    public function selectSub(\Closure $callback, string $as): self
+    {
+        $inner = new self($this->manager, $this->resolvedName);
+        $returned = $callback($inner);
+        $subBuilder = ($returned instanceof self) ? $returned : $inner;
+
+        $compiled = $subBuilder->compile();
+        $this->selectColumns[] = new RawExpression(
+            "({$compiled['sql']}) AS {$as}",
+            $compiled['bindings'],
+        );
+
+        return $this;
+    }
+
+    /**
      * Apply DISTINCT to the SELECT.
      */
     public function distinct(): self
@@ -500,6 +521,49 @@ final class QueryBuilder
             boolean: WhereBoolean::Or,
             bindings: $bindings,
         );
+        return $this;
+    }
+
+    /**
+     * Add a column-to-column comparison (no binding — both sides are identifiers).
+     *
+     * @example ->whereColumn('users.updated_at', '>', 'profiles.synced_at')
+     */
+    public function whereColumn(string $first, string $operator, string $second, WhereBoolean $boolean = WhereBoolean::And): self
+    {
+        $this->wheres[] = new WhereClause(
+            column: "{$first} {$operator} {$second}",
+            operator: Operator::Raw,
+            value: null,
+            boolean: $boolean,
+        );
+        return $this;
+    }
+
+    /**
+     * Add a WHERE condition using a sub-query.
+     *
+     * @example ->whereSubQuery('id', 'IN', fn($sq) => $sq->from('orders')->select(['user_id']))
+     *
+     * @param \Closure(self): self|void $callback
+     */
+    public function whereSubQuery(string $column, string $operator, \Closure $callback, WhereBoolean $boolean = WhereBoolean::And): self
+    {
+        $inner = new self($this->manager, $this->resolvedName);
+        $returned = $callback($inner);
+        $subBuilder = ($returned instanceof self) ? $returned : $inner;
+
+        $compiled = $subBuilder->compile();
+        $sql = "{$column} {$operator} ({$compiled['sql']})";
+
+        $this->wheres[] = new WhereClause(
+            column: $sql,
+            operator: Operator::Raw,
+            value: null,
+            boolean: $boolean,
+            bindings: $compiled['bindings'],
+        );
+
         return $this;
     }
 
@@ -1244,6 +1308,40 @@ final class QueryBuilder
         $this->lockNoWait       = false;
         $this->cteBuilder       = null;
         $this->resultCacheKey   = null;
+        return $this;
+    }
+
+    // ── Conditional & Debugging ─────────────────────────────────
+
+    /**
+     * Conditionally apply a callback to this builder.
+     * Zero-overhead when $condition is false — no closure invoked.
+     *
+     * @example ->when($status !== null, fn($q) => $q->where('status', '=', $status))
+     *
+     * @param bool|mixed                  $condition  Truthy value triggers the callback.
+     * @param \Closure(self, mixed): void $callback   Applied when $condition is truthy.
+     * @param (\Closure(self): void)|null $fallback   Applied when $condition is falsy (optional).
+     */
+    public function when(mixed $condition, \Closure $callback, ?\Closure $fallback = null): self
+    {
+        if ($condition) {
+            $callback($this, $condition);
+        } elseif ($fallback !== null) {
+            $fallback($this);
+        }
+        return $this;
+    }
+
+    /**
+     * Inspect the current builder state without breaking the fluent chain.
+     * The closure receives a clone so mutations inside tap() don't affect the builder.
+     *
+     * @param \Closure(self): void $callback
+     */
+    public function tap(\Closure $callback): self
+    {
+        $callback(clone $this);
         return $this;
     }
 

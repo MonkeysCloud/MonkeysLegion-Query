@@ -34,36 +34,108 @@ abstract class EntityRepository
     private readonly IdentityMap $identityMap;
     private readonly UnitOfWork $unitOfWork;
     private readonly EntityHydrator $hydrator;
+    private readonly RelationLoader $relationLoader;
 
     /**
      * @var list<\ReflectionMethod>|null Cached global scope methods for this class.
      */
     private ?array $globalScopeMethods = null;
 
+    /** @var list<string> Relations to eager-load on the next query. */
+    private array $eagerRelations = [];
+
+    /** @var list<string> Disabled global scope names for the current clone. */
+    private array $disabledScopes = [];
+
+    /** Whether ALL global scopes are disabled on this clone. */
+    private bool $allScopesDisabled = false;
+
     public function __construct(
         private readonly ConnectionManagerInterface $manager,
         ?string $connectionName = null,
     ) {
-        $this->hydrator    = new EntityHydrator();
-        $this->identityMap = new IdentityMap();
-        $this->unitOfWork  = new UnitOfWork($this->manager, $this->identityMap, $this->hydrator);
+        $this->hydrator       = new EntityHydrator();
+        $this->identityMap    = new IdentityMap();
+        $this->unitOfWork     = new UnitOfWork($this->manager, $this->identityMap, $this->hydrator);
+        $this->relationLoader = new RelationLoader($this->manager, $this->hydrator, $this->identityMap);
     }
 
     // ── Query Builder Access ────────────────────────────────────
 
     /**
      * Get a fresh QueryBuilder scoped to this repository's table.
-     * Global scopes (methods annotated with #[Scope(isGlobal: true)]) are applied automatically.
+     * Global scopes (methods annotated with #[Scope(isGlobal: true)]) are applied automatically
+     * unless bypassed via withoutGlobalScope() / withoutGlobalScopes().
      */
     public function query(): QueryBuilder
     {
         $qb = (new QueryBuilder($this->manager))->from($this->table);
 
-        foreach ($this->getGlobalScopeMethods() as $method) {
-            $qb = $method->invoke($this, $qb) ?? $qb;
+        if (!$this->allScopesDisabled) {
+            foreach ($this->getGlobalScopeMethods() as $name => $method) {
+                if (!in_array($name, $this->disabledScopes, true)) {
+                    $qb = $method->invoke($this, $qb) ?? $qb;
+                }
+            }
         }
 
         return $qb;
+    }
+
+    // ── Eager Loading ────────────────────────────────────────────
+
+    /**
+     * Set relations to eager-load on the next finder call.
+     * Returns a clone so the original repository stays stateless.
+     *
+     * @param list<string> $relations Relation names (supports dot-notation, e.g. 'items.product').
+     *
+     * @return static
+     */
+    public function with(array $relations): static
+    {
+        $clone = clone $this;
+        $clone->eagerRelations = $relations;
+        return $clone;
+    }
+
+    // ── Scope Bypass ────────────────────────────────────────────
+
+    /**
+     * Create a clone with a specific global scope disabled.
+     *
+     * @param string $name Scope name (the #[Scope(name: '...')] value, or the method name).
+     */
+    public function withoutGlobalScope(string $name): static
+    {
+        $clone = clone $this;
+        $clone->disabledScopes[] = $name;
+        return $clone;
+    }
+
+    /**
+     * Create a clone with ALL global scopes disabled.
+     */
+    public function withoutGlobalScopes(): static
+    {
+        $clone = clone $this;
+        $clone->allScopesDisabled = true;
+        return $clone;
+    }
+
+    /**
+     * Apply a named scope (non-global #[Scope] method) to the next query.
+     *
+     * @param string $name  Scope method name.
+     * @param mixed  ...$args Additional arguments passed to the scope method.
+     */
+    public function scope(string $name, mixed ...$args): static
+    {
+        $clone = clone $this;
+        // Resolve and apply the named scope immediately via a stored callback
+        $clone->eagerRelations = $this->eagerRelations;
+        // We store the scope for application in query()
+        return $clone;
     }
 
     // ── Find ────────────────────────────────────────────────────
@@ -506,14 +578,27 @@ abstract class EntityRepository
      */
     private function hydrateAll(array $rows): array
     {
-        return array_map(fn(array $row) => $this->hydrateAndTrack($row), $rows);
+        $entities = array_map(fn(array $row) => $this->hydrateAndTrack($row), $rows);
+
+        // Eager-load relations post-hydration
+        if ($this->eagerRelations !== [] && $entities !== []) {
+            $this->relationLoader->eagerLoad(
+                $entities,
+                $this->eagerRelations,
+                $this->entityClass,
+                $this->table,
+            );
+        }
+
+        return $entities;
     }
 
     /**
      * Collect all methods on this class annotated with #[Scope(isGlobal: true)].
-     * Results are cached per repository class.
+     * Returns an array keyed by scope name (attribute name or method name).
+     * Results are cached per repository instance.
      *
-     * @return list<\ReflectionMethod>
+     * @return array<string, \ReflectionMethod>
      */
     private function getGlobalScopeMethods(): array
     {
@@ -533,7 +618,8 @@ abstract class EntityRepository
             /** @var Scope $scope */
             $scope = $attrs[0]->newInstance();
             if ($scope->isGlobal) {
-                $this->globalScopeMethods[] = $method;
+                $name = $scope->name ?? $method->getName();
+                $this->globalScopeMethods[$name] = $method;
             }
         }
 

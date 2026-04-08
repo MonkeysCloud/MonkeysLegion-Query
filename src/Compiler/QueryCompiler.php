@@ -525,7 +525,20 @@ final class QueryCompiler
         }
 
         foreach ($wheres as $w) {
-            $parts[] = 'W:' . $w->column . ':' . $w->operator->value . ':' . $w->boolean->value;
+            $key = 'W:' . $w->column . ':' . $w->operator->value . ':' . $w->boolean->value;
+            // IN/NOT IN: the SQL placeholder count varies by number of values.
+            // Include cardinality to avoid structural cache collisions.
+            if (($w->operator === \MonkeysLegion\Query\Enums\Operator::In
+                || $w->operator === \MonkeysLegion\Query\Enums\Operator::NotIn)
+                && is_array($w->value)
+            ) {
+                $key .= ':' . count($w->value);
+            }
+            // Raw: the column IS the SQL — include it as-is for uniqueness
+            if ($w->operator === \MonkeysLegion\Query\Enums\Operator::Raw) {
+                $key .= ':RAW:' . strlen($w->column);
+            }
+            $parts[] = $key;
         }
 
         if ($groupBy !== null) {
