@@ -621,6 +621,24 @@ class Phase6Test extends TestCase
         // Now all 5 visible again
         self::assertCount(5, $repo->findAll());
     }
+
+    public function testOnlyTrashedReturnsOnlyDeleted(): void
+    {
+        $this->pdo->exec("UPDATE users SET deleted_at = '2026-01-01' WHERE id IN (1, 3)");
+
+        $repo = new P6SoftDeleteRepo($this->manager);
+
+        // Normal: 3 visible (Bob, Diana, Eve)
+        self::assertCount(3, $repo->findAll());
+
+        // onlyTrashed: 2 (Alice, Charlie)
+        $trashed = $repo->onlyTrashed()->findAll();
+        self::assertCount(2, $trashed);
+
+        $names = array_map(fn($u) => $u->name, $trashed);
+        self::assertContains('Alice', $names);
+        self::assertContains('Charlie', $names);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════

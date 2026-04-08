@@ -115,6 +115,7 @@ final class QueryCompiler
             $unions,
             $ctePrefix,
             $lockSuffix,
+            $grammar,
         );
 
         // Check structural cache
@@ -358,18 +359,29 @@ final class QueryCompiler
             }
         }
 
-        // compileInsertOrIgnore handles one value tuple; for multi-row we fall back to
-        // building the statement manually using the per-grammar prefix.
-        $singlePlaceholder = $rowPlaceholders[0] ?? '()';
+        // compileInsertOrIgnore handles one value tuple; for multi-row we need to
+        // structurally replace the VALUES clause while preserving grammar suffixes.
+        $singlePlaceholder = '(' . implode(', ', array_fill(0, count($columns), '?')) . ')';
         $baseSql = $grammar->compileInsertOrIgnore($table, $columns, array_fill(0, count($columns), '?'));
 
         if (count($rows) === 1) {
             return ['sql' => $baseSql, 'bindings' => $bindings];
         }
 
-        // Multi-row: replace the single VALUES(...) with multiple tuples
-        $valuesPart = implode(', ', $rowPlaceholders);
-        $sql = (string) preg_replace('/VALUES \([^)]*\)$/', "VALUES {$valuesPart}", $baseSql);
+        // Multi-row: structurally replace the single VALUES tuple while preserving
+        // any grammar-specific suffix (e.g. "ON CONFLICT DO NOTHING" for PG)
+        $valuesPart   = implode(', ', $rowPlaceholders);
+        $valuesClause = "VALUES {$singlePlaceholder}";
+        $position     = strpos($baseSql, $valuesClause);
+
+        if ($position === false) {
+            // Fallback: grammar produced unexpected SQL shape, return as-is
+            return ['sql' => $baseSql, 'bindings' => $bindings];
+        }
+
+        $sql = substr($baseSql, 0, $position)
+            . "VALUES {$valuesPart}"
+            . substr($baseSql, $position + strlen($valuesClause));
 
         return ['sql' => $sql, 'bindings' => $bindings];
     }
@@ -512,9 +524,11 @@ final class QueryCompiler
         array $unions,
         ?string $ctePrefix = null,
         ?string $lockSuffix = null,
+        ?GrammarInterface $grammar = null,
     ): string {
         // Build a compact structural fingerprint
-        $parts = [$type, $selectSql, $from];
+        // Include grammar class to prevent cross-driver cache collisions
+        $parts = [$type, $selectSql, $from, $grammar !== null ? $grammar::class : 'default'];
 
         if ($ctePrefix !== null) {
             $parts[] = 'CTE:' . $ctePrefix;

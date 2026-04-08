@@ -34,6 +34,9 @@ trait SoftDeletes
     /** Column name for the soft-delete timestamp. Override if your table uses a different name. */
     protected string $deletedAtColumn = 'deleted_at';
 
+    /** When true, queries return ONLY soft-deleted rows instead of excluding them. */
+    private bool $onlyTrashedFilter = false;
+
     /**
      * Global scope: automatically exclude soft-deleted rows from all queries.
      * Applied by EntityRepository::query() via attribute reflection.
@@ -41,6 +44,9 @@ trait SoftDeletes
     #[Scope(isGlobal: true, name: 'softDeletes')]
     public function applySoftDeleteScope(QueryBuilder $qb): QueryBuilder
     {
+        if ($this->onlyTrashedFilter) {
+            return $qb->whereNotNull($this->deletedAtColumn);
+        }
         return $qb->whereNull($this->deletedAtColumn);
     }
 
@@ -119,10 +125,8 @@ trait SoftDeletes
      */
     public function onlyTrashed(): static
     {
-        // Remove the global exclusion scope, then add an explicit filter
-        // for rows that ARE deleted. We return a clone with a modified query.
-        $clone = $this->withoutGlobalScope('softDeletes');
-        // We'll use the scope system to add a one-time filter
+        $clone = clone $this;
+        $clone->onlyTrashedFilter = true;
         return $clone;
     }
 

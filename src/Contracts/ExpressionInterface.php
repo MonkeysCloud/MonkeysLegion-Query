@@ -22,7 +22,7 @@ interface ExpressionInterface
     /**
      * Get the parameter bindings for this expression.
      *
-     * @return array<string, mixed>
+     * @return list<mixed>
      */
     public function getBindings(): array;
 }

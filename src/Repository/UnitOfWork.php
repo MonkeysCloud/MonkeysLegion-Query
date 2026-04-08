@@ -124,14 +124,49 @@ final class UnitOfWork
             }
 
             foreach ($grouped as $table => $items) {
-                if (count($items) === 1) {
-                    // Single insert — use standard insert
-                    $item = $items[0];
+                // Split into explicit-ID rows (can batch) vs auto-increment (must insert individually)
+                $explicitId = [];
+                $autoIncrement = [];
+                foreach ($items as $item) {
+                    if (isset($item['data']['id']) && $item['data']['id'] !== '' && $item['data']['id'] !== null) {
+                        $explicitId[] = $item;
+                    } else {
+                        $autoIncrement[] = $item;
+                    }
+                }
+
+                // Batch insert rows with explicit IDs
+                if (count($explicitId) > 1) {
+                    $rows = array_map(fn($item) => $item['data'], $explicitId);
+                    $qb = $getBuilder($table);
+                    $qb->insertMany($rows);
+
+                    foreach ($explicitId as $item) {
+                        $entityId = (string) $item['data']['id'];
+                        $this->identityMap->set(get_class($item['entity']), $entityId, $item['entity']);
+                        $this->snapshot($item['entity']);
+                        $counts['inserts']++;
+                    }
+                } elseif (count($explicitId) === 1) {
+                    // Single explicit-ID insert
+                    $item = $explicitId[0];
+                    $qb = $getBuilder($item['table']);
+                    $qb->insert($item['data']);
+                    $entityId = (string) $item['data']['id'];
+                    $this->identityMap->set(get_class($item['entity']), $entityId, $item['entity']);
+                    $this->snapshot($item['entity']);
+                    $counts['inserts']++;
+                }
+
+                // Insert auto-increment rows individually to capture generated IDs
+                foreach ($autoIncrement as $item) {
                     $qb = $getBuilder($item['table']);
                     $id = $qb->insert($item['data']);
 
                     if ($id !== false && !is_array($id)) {
-                        $this->hydrator->setPropertyValue($item['entity'], 'id', (int) $id);
+                        // Preserve type: numeric IDs get cast to int, string IDs stay as-is
+                        $typedId = is_numeric($id) ? (int) $id : $id;
+                        $this->hydrator->setPropertyValue($item['entity'], 'id', $typedId);
                         $entityId = (string) $id;
                     } else {
                         $entityId = (string) ($item['data']['id'] ?? '');
@@ -143,22 +178,6 @@ final class UnitOfWork
                     }
 
                     $counts['inserts']++;
-                } else {
-                    // Batch insert — use insertMany for N rows in 1 query
-                    $rows = array_map(fn($item) => $item['data'], $items);
-                    $qb = $getBuilder($table);
-                    $qb->insertMany($rows);
-
-                    // For batch inserts, we can't reliably get individual IDs
-                    // from all DB drivers, so we re-query if needed
-                    foreach ($items as $item) {
-                        $entityId = (string) ($item['data']['id'] ?? '');
-                        if ($entityId !== '') {
-                            $this->identityMap->set(get_class($item['entity']), $entityId, $item['entity']);
-                            $this->snapshot($item['entity']);
-                        }
-                        $counts['inserts']++;
-                    }
                 }
             }
 
