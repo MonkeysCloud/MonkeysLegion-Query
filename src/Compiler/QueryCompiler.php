@@ -525,20 +525,12 @@ final class QueryCompiler
         }
 
         foreach ($wheres as $w) {
-            $key = 'W:' . $w->column . ':' . $w->operator->value . ':' . $w->boolean->value;
-            // IN/NOT IN: the SQL placeholder count varies by number of values.
-            // Include cardinality to avoid structural cache collisions.
-            if (($w->operator === \MonkeysLegion\Query\Enums\Operator::In
-                || $w->operator === \MonkeysLegion\Query\Enums\Operator::NotIn)
-                && is_array($w->value)
-            ) {
-                $key .= ':' . count($w->value);
-            }
-            // Raw: the column IS the SQL — include it as-is for uniqueness
-            if ($w->operator === \MonkeysLegion\Query\Enums\Operator::Raw) {
-                $key .= ':RAW:' . strlen($w->column);
-            }
-            $parts[] = $key;
+            // Use the compiled SQL shape directly — it already encodes the
+            // full structural identity (IN cardinality, raw expressions,
+            // sub-queries, grouped conditions, etc.) without needing
+            // per-operator heuristics. toSql() is O(1) string work and
+            // contains no bound values, only parameterized placeholders.
+            $parts[] = 'W:' . $w->toSql() . ':' . $w->boolean->value;
         }
 
         if ($groupBy !== null) {

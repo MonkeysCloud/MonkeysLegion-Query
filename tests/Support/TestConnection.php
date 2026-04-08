@@ -31,6 +31,11 @@ final class TestConnection implements ConnectionInterface
         private readonly string $name = 'test',
     ) {}
 
+    public function resetQueryCount(): void
+    {
+        $this->queryCountValue = 0;
+    }
+
     public function connect(): void {}
     public function disconnect(): void {}
     public function reconnect(): void {}
