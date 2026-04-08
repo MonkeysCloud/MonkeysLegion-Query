@@ -5,6 +5,7 @@ namespace MonkeysLegion\Query\Repository;
 
 use MonkeysLegion\Database\Contracts\ConnectionManagerInterface;
 use MonkeysLegion\Query\Attributes\Scope;
+use MonkeysLegion\Query\Exceptions\EntityNotFoundException;
 use MonkeysLegion\Query\Query\QueryBuilder;
 
 /**
@@ -30,6 +31,9 @@ abstract class EntityRepository
     /** @var class-string<TEntity> */
     protected string $entityClass;
     protected string $table;
+
+    /** Primary key column name. Override for UUID or custom PK tables. */
+    protected string $primaryKey = 'id';
 
     private readonly IdentityMap $identityMap;
     private readonly UnitOfWork $unitOfWork;
@@ -154,7 +158,7 @@ abstract class EntityRepository
             return $this->identityMap->get($this->entityClass, $id);
         }
 
-        $row = $this->query()->where('id', '=', $id)->first();
+        $row = $this->query()->where($this->primaryKey, '=', $id)->first();
 
         if ($row === null) {
             return null;
@@ -174,8 +178,9 @@ abstract class EntityRepository
      */
     public function findOrFail(int|string $id): object
     {
-        return $this->find($id) ?? throw new \RuntimeException(
-            "Entity {$this->entityClass} with id '{$id}' not found.",
+        return $this->find($id) ?? throw new EntityNotFoundException(
+            $this->entityClass,
+            $id,
         );
     }
 
@@ -206,10 +211,10 @@ abstract class EntityRepository
 
         // Fetch missing in single query
         if ($missing !== []) {
-            $rows = $this->query()->whereIn('id', $missing)->get();
+            $rows = $this->query()->whereIn($this->primaryKey, $missing)->get();
             foreach ($rows as $row) {
                 $entity = $this->hydrateAndTrack($row);
-                $cached[$row['id']] = $entity;
+                $cached[$row[$this->primaryKey]] = $entity;
             }
         }
 
@@ -250,8 +255,9 @@ abstract class EntityRepository
         }
 
         // Check identity map
-        if (isset($row['id']) && $this->identityMap->has($this->entityClass, $row['id'])) {
-            return $this->identityMap->get($this->entityClass, $row['id']);
+        $pk = $this->primaryKey;
+        if (isset($row[$pk]) && $this->identityMap->has($this->entityClass, $row[$pk])) {
+            return $this->identityMap->get($this->entityClass, $row[$pk]);
         }
 
         return $this->hydrateAndTrack($row);
@@ -325,7 +331,7 @@ abstract class EntityRepository
         $total = (clone $base)->count();
         $rows  = (clone $base)
             ->forPage($page, $perPage)
-            ->orderBy('id')
+            ->orderBy($this->primaryKey)
             ->get();
 
         return [
@@ -447,7 +453,107 @@ abstract class EntityRepository
     public function delete(int|string $id): int
     {
         $this->identityMap->remove($this->entityClass, $id);
-        return $this->query()->where('id', '=', $id)->delete();
+        return $this->query()->where($this->primaryKey, '=', $id)->delete();
+    }
+
+    /**
+     * Quick update by ID (bypasses unit of work — direct single query).
+     *
+     * @param array<string, mixed> $data Column => value pairs to update.
+     */
+    public function update(int|string $id, array $data): void
+    {
+        $this->query()->where($this->primaryKey, '=', $id)->update($data);
+
+        // Invalidate identity map so next find() fetches fresh data
+        $this->identityMap->remove($this->entityClass, $id);
+    }
+
+    /**
+     * Bulk update all rows matching criteria (single query, no hydration).
+     *
+     * @param array<string, mixed> $criteria Column => value pairs for WHERE.
+     * @param array<string, mixed> $data     Column => value pairs to SET.
+     *
+     * @return int Affected rows.
+     */
+    public function updateWhere(array $criteria, array $data): int
+    {
+        $qb = $this->query();
+        foreach ($criteria as $col => $val) {
+            if ($val === null) {
+                $qb->whereNull($col);
+            } elseif (is_array($val)) {
+                $qb->whereIn($col, $val);
+            } else {
+                $qb->where($col, '=', $val);
+            }
+        }
+        return $qb->update($data);
+    }
+
+    /**
+     * Bulk delete all rows matching criteria (single query, no hydration).
+     *
+     * @return int Affected rows.
+     */
+    public function deleteWhere(array $criteria): int
+    {
+        $qb = $this->query();
+        foreach ($criteria as $col => $val) {
+            if ($val === null) {
+                $qb->whereNull($col);
+            } elseif (is_array($val)) {
+                $qb->whereIn($col, $val);
+            } else {
+                $qb->where($col, '=', $val);
+            }
+        }
+        return $qb->delete();
+    }
+
+    /**
+     * Find an existing entity by criteria, or create it with defaults.
+     * Atomic: SELECT then INSERT if not found.
+     *
+     * @param array<string, mixed> $criteria Column => value pairs to search.
+     * @param array<string, mixed> $defaults Additional data if creating.
+     *
+     * @return TEntity
+     */
+    public function firstOrCreate(array $criteria, array $defaults = []): object
+    {
+        $existing = $this->findOneBy($criteria);
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        return $this->create(array_merge($criteria, $defaults));
+    }
+
+    /**
+     * Find and update an entity, or create a new one.
+     * Atomic: SELECT then UPDATE/INSERT.
+     *
+     * @param array<string, mixed> $criteria Column => value pairs to search.
+     * @param array<string, mixed> $values   Data to update (if found) or merge with criteria (if creating).
+     *
+     * @return TEntity
+     */
+    public function updateOrCreate(array $criteria, array $values): object
+    {
+        $existing = $this->findOneBy($criteria);
+
+        if ($existing !== null) {
+            $id = $this->hydrator->getPropertyValue($existing, $this->primaryKey);
+            if ($id !== null) {
+                $this->update($id, $values);
+                // Re-hydrate to get fresh state
+                return $this->findOrFail($id);
+            }
+        }
+
+        return $this->create(array_merge($criteria, $values));
     }
 
     /**
@@ -469,13 +575,11 @@ abstract class EntityRepository
 
         $row = (new QueryBuilder($this->manager))
             ->from($this->table)
-            ->where('id', '=', $id)
+            ->where($this->primaryKey, '=', $id)
             ->first();
 
         if ($row === null) {
-            throw new \RuntimeException(
-                "Entity {$this->entityClass} with id '{$id}' no longer exists.",
-            );
+            throw new EntityNotFoundException($this->entityClass, $id);
         }
 
         // Re-hydrate into the existing instance
@@ -526,6 +630,86 @@ abstract class EntityRepository
         return $qb->exists();
     }
 
+    /**
+     * Execute a SUM aggregate with optional criteria.
+     */
+    public function sum(string $column, array $criteria = []): float
+    {
+        $qb = $this->applyCriteria($this->query(), $criteria);
+        return $qb->sum($column);
+    }
+
+    /**
+     * Execute an AVG aggregate with optional criteria.
+     */
+    public function avg(string $column, array $criteria = []): float
+    {
+        $qb = $this->applyCriteria($this->query(), $criteria);
+        return $qb->avg($column);
+    }
+
+    /**
+     * Execute a MIN aggregate with optional criteria.
+     */
+    public function min(string $column, array $criteria = []): mixed
+    {
+        $qb = $this->applyCriteria($this->query(), $criteria);
+        return $qb->min($column);
+    }
+
+    /**
+     * Execute a MAX aggregate with optional criteria.
+     */
+    public function max(string $column, array $criteria = []): mixed
+    {
+        $qb = $this->applyCriteria($this->query(), $criteria);
+        return $qb->max($column);
+    }
+
+    /**
+     * Extract a single column from all matching entities.
+     *
+     * @return list<mixed>|array<string|int, mixed>
+     */
+    public function pluck(string $column, ?string $key = null, array $criteria = []): array
+    {
+        $qb = $this->applyCriteria($this->query(), $criteria);
+        $rows = $qb->get();
+
+        if ($key === null) {
+            return array_column($rows, $column);
+        }
+
+        $result = [];
+        foreach ($rows as $row) {
+            $result[$row[$key]] = $row[$column];
+        }
+        return $result;
+    }
+
+    /**
+     * Process entities in fixed-size batches (memory-efficient).
+     * Each batch is hydrated independently; identity map is NOT shared across batches.
+     *
+     * @param \Closure(list<TEntity>): bool|void $callback Return false to stop.
+     */
+    public function chunk(int $size, \Closure $callback, array $criteria = [], array $orderBy = []): void
+    {
+        $qb = $this->applyCriteria($this->query(), $criteria);
+        foreach ($orderBy as $col => $dir) {
+            $qb->orderBy($col, $dir);
+        }
+        if ($orderBy === []) {
+            $qb->orderBy($this->primaryKey);
+        }
+
+        $qb->chunk($size, function (array $rows) use ($callback): bool|null {
+            $entities = $this->hydrateAll($rows);
+            $result = $callback($entities);
+            return $result === false ? false : null;
+        });
+    }
+
     // ── Identity Map Access ─────────────────────────────────────
 
     /**
@@ -554,19 +738,39 @@ abstract class EntityRepository
      */
     private function hydrateAndTrack(array $row): object
     {
+        $pk = $this->primaryKey;
+
         // Check identity map first
-        if (isset($row['id']) && $this->identityMap->has($this->entityClass, $row['id'])) {
-            return $this->identityMap->get($this->entityClass, $row['id']);
+        if (isset($row[$pk]) && $this->identityMap->has($this->entityClass, $row[$pk])) {
+            return $this->identityMap->get($this->entityClass, $row[$pk]);
         }
 
         $entity = $this->hydrator->hydrate($this->entityClass, $row);
 
-        if (isset($row['id'])) {
-            $this->identityMap->set($this->entityClass, $row['id'], $entity);
+        if (isset($row[$pk])) {
+            $this->identityMap->set($this->entityClass, $row[$pk], $entity);
             $this->unitOfWork->snapshot($entity);
+            $this->unitOfWork->track($entity, $this->table);
         }
 
         return $entity;
+    }
+
+    /**
+     * Apply criteria array to a QueryBuilder.
+     */
+    private function applyCriteria(QueryBuilder $qb, array $criteria): QueryBuilder
+    {
+        foreach ($criteria as $col => $val) {
+            if ($val === null) {
+                $qb->whereNull($col);
+            } elseif (is_array($val)) {
+                $qb->whereIn($col, $val);
+            } else {
+                $qb->where($col, '=', $val);
+            }
+        }
+        return $qb;
     }
 
     /**

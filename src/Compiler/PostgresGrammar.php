@@ -129,4 +129,17 @@ final class PostgresGrammar implements GrammarInterface
         }
         return $sql;
     }
+
+    #[\Override]
+    public function compileJsonContains(string $column, string $placeholder = '?'): string
+    {
+        // PostgreSQL: column::jsonb @> value::jsonb
+        return "{$column}::jsonb @> {$placeholder}::jsonb";
+    }
+
+    #[\Override]
+    public function compileDateExtract(string $column): string
+    {
+        return "{$column}::date";
+    }
 }

@@ -114,4 +114,17 @@ final class MySqlGrammar implements GrammarInterface
         }
         return $sql;
     }
+
+    #[\Override]
+    public function compileJsonContains(string $column, string $placeholder = '?'): string
+    {
+        // MySQL 5.7+: JSON_CONTAINS(column, value)
+        return "JSON_CONTAINS({$column}, {$placeholder})";
+    }
+
+    #[\Override]
+    public function compileDateExtract(string $column): string
+    {
+        return "DATE({$column})";
+    }
 }

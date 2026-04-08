@@ -83,4 +83,19 @@ interface GrammarInterface
      * @param bool             $noWait   Whether to add NOWAIT.
      */
     public function compileLock(string $mode, bool $noWait = false): string;
+
+    /**
+     * Compile a JSON contains/membership check.
+     *
+     * @param string $column      JSON column name.
+     * @param string $placeholder Bind placeholder (usually '?').
+     */
+    public function compileJsonContains(string $column, string $placeholder = '?'): string;
+
+    /**
+     * Compile a DATE extraction expression.
+     *
+     * @param string $column Column or expression containing a datetime.
+     */
+    public function compileDateExtract(string $column): string;
 }

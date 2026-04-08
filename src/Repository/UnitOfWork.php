@@ -100,42 +100,66 @@ final class UnitOfWork
      */
     public function flush(): array
     {
+        // Auto-detect dirty entities before flushing
+        $this->computeChangeSets();
+
         $conn = $this->manager->write();
         $counts = ['inserts' => 0, 'updates' => 0, 'deletes' => 0];
 
         $conn->transaction(function () use (&$counts): void {
-            // Reuse one QueryBuilder per table to avoid repeated instantiation (#10)
             /** @var array<string, QueryBuilder> $builders */
             $builders = [];
             $getBuilder = function (string $table) use (&$builders): QueryBuilder {
                 if (!isset($builders[$table])) {
                     $builders[$table] = (new QueryBuilder($this->manager))->from($table);
                 }
-                // Reset clauses but keep the FROM table
                 $builders[$table]->reset()->from($table);
                 return $builders[$table];
             };
 
-            // Inserts
+            // Group inserts by table for batch optimization
+            $grouped = [];
             foreach ($this->pendingInserts as $item) {
-                $qb = $getBuilder($item['table']);
-                $id = $qb->insert($item['data']);
+                $grouped[$item['table']][] = $item;
+            }
 
-                // Set the ID on the entity if auto-generated
-                if ($id !== false && !is_array($id)) {
-                    $this->hydrator->setPropertyValue($item['entity'], 'id', (int) $id);
-                    $entityId = (string) $id;
+            foreach ($grouped as $table => $items) {
+                if (count($items) === 1) {
+                    // Single insert — use standard insert
+                    $item = $items[0];
+                    $qb = $getBuilder($item['table']);
+                    $id = $qb->insert($item['data']);
+
+                    if ($id !== false && !is_array($id)) {
+                        $this->hydrator->setPropertyValue($item['entity'], 'id', (int) $id);
+                        $entityId = (string) $id;
+                    } else {
+                        $entityId = (string) ($item['data']['id'] ?? '');
+                    }
+
+                    if ($entityId !== '') {
+                        $this->identityMap->set(get_class($item['entity']), $entityId, $item['entity']);
+                        $this->snapshot($item['entity']);
+                    }
+
+                    $counts['inserts']++;
                 } else {
-                    $entityId = (string) ($item['data']['id'] ?? '');
-                }
+                    // Batch insert — use insertMany for N rows in 1 query
+                    $rows = array_map(fn($item) => $item['data'], $items);
+                    $qb = $getBuilder($table);
+                    $qb->insertMany($rows);
 
-                // Register in identity map + snapshot
-                if ($entityId !== '') {
-                    $this->identityMap->set(get_class($item['entity']), $entityId, $item['entity']);
-                    $this->snapshot($item['entity']);
+                    // For batch inserts, we can't reliably get individual IDs
+                    // from all DB drivers, so we re-query if needed
+                    foreach ($items as $item) {
+                        $entityId = (string) ($item['data']['id'] ?? '');
+                        if ($entityId !== '') {
+                            $this->identityMap->set(get_class($item['entity']), $entityId, $item['entity']);
+                            $this->snapshot($item['entity']);
+                        }
+                        $counts['inserts']++;
+                    }
                 }
-
-                $counts['inserts']++;
             }
 
             // Updates
@@ -144,7 +168,6 @@ final class UnitOfWork
                     ->where('id', '=', $item['id'])
                     ->update($item['data']);
 
-                // Refresh snapshot
                 $this->snapshot($item['entity']);
                 $counts['updates']++;
             }
@@ -186,5 +209,98 @@ final class UnitOfWork
         $this->pendingUpdates = [];
         $this->pendingDeletes = [];
         $this->snapshots = [];
+    }
+
+    /**
+     * Scan all snapshotted entities for changes and auto-schedule updates.
+     * Called automatically by flush() — no need for explicit persist() on tracked entities.
+     */
+    public function computeChangeSets(): void
+    {
+        foreach ($this->snapshots as $objectId => $originalData) {
+            // Find the entity via identity map reverse lookup
+            $entity = $this->findEntityByObjectId($objectId);
+            if ($entity === null) {
+                continue; // Entity was GC'd or removed
+            }
+
+            $currentData = $this->hydrator->dehydrate($entity);
+            $id = $currentData['id'] ?? null;
+            if ($id === null) {
+                continue;
+            }
+
+            // Check if already scheduled
+            foreach ($this->pendingUpdates as $pending) {
+                if ($pending['entity'] === $entity) {
+                    continue 2;
+                }
+            }
+
+            // Compute delta
+            $changed = [];
+            foreach ($currentData as $key => $value) {
+                if ($key === 'id') {
+                    continue;
+                }
+
+                $original = $originalData[$key] ?? null;
+                if ($value instanceof \DateTimeInterface && $original instanceof \DateTimeInterface) {
+                    if ($value->format('Y-m-d H:i:s') !== $original->format('Y-m-d H:i:s')) {
+                        $changed[$key] = $value;
+                    }
+                } elseif ($value !== $original) {
+                    $changed[$key] = $value;
+                }
+            }
+
+            if ($changed !== []) {
+                // Resolve table from pending inserts or use entity class name
+                $table = $this->resolveTableForEntity($entity);
+                if ($table !== null) {
+                    $this->pendingUpdates[] = [
+                        'entity' => $entity,
+                        'table' => $table,
+                        'data' => $changed,
+                        'id' => $id,
+                    ];
+                }
+            }
+        }
+    }
+
+    /**
+     * Get the count of all pending operations.
+     *
+     * @return array{inserts: int, updates: int, deletes: int}
+     */
+    public function getPendingCount(): array
+    {
+        return [
+            'inserts' => count($this->pendingInserts),
+            'updates' => count($this->pendingUpdates),
+            'deletes' => count($this->pendingDeletes),
+        ];
+    }
+
+    /** @var array<int, array{entity: object, table: string}> objectId → entity+table for reverse lookup */
+    private array $trackedEntities = [];
+
+    /**
+     * Register an entity for auto-dirty detection.
+     */
+    public function track(object $entity, string $table): void
+    {
+        $this->trackedEntities[spl_object_id($entity)] = ['entity' => $entity, 'table' => $table];
+    }
+
+    private function findEntityByObjectId(int $objectId): ?object
+    {
+        return $this->trackedEntities[$objectId]['entity'] ?? null;
+    }
+
+    private function resolveTableForEntity(object $entity): ?string
+    {
+        return $this->trackedEntities[spl_object_id($entity)]['table'] ?? null;
     }
 }

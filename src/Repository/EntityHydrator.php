@@ -152,8 +152,14 @@ final class EntityHydrator
             if ($fieldAttrs) {
                 /** @var Field $field */
                 $field = $fieldAttrs[0]->newInstance();
-                $column = $field->name ?? $prop->getName();
-                $type = $field->type ?? $this->inferTypeFromProperty($prop);
+                $column = $prop->getName();
+                $type = $field->type;
+
+                // Override with BackedEnum detection from property type
+                $inferredType = $this->inferTypeFromProperty($prop);
+                if (str_starts_with($inferredType, 'enum:')) {
+                    $type = $inferredType;
+                }
 
                 $map[] = [
                     'prop'   => $prop,
@@ -217,6 +223,14 @@ final class EntityHydrator
 
         $name = $type instanceof \ReflectionNamedType ? $type->getName() : 'string';
 
+        // Check for BackedEnum
+        if ($type instanceof \ReflectionNamedType
+            && !$type->isBuiltin()
+            && is_subclass_of($name, \BackedEnum::class)
+        ) {
+            return 'enum:' . $name;
+        }
+
         return match ($name) {
             'int'               => 'integer',
             'float'             => 'float',
@@ -236,13 +250,19 @@ final class EntityHydrator
             return null;
         }
 
+        // BackedEnum: type is 'enum:Full\Class\Name'
+        if (str_starts_with($type, 'enum:')) {
+            $enumClass = substr($type, 5);
+            return $enumClass::from($value);
+        }
+
         return match ($type) {
             'integer', 'int', 'unsignedBigInt', 'bigInt', 'smallInt', 'tinyInt' => (int) $value,
             'float', 'decimal'         => (float) $value,
             'boolean', 'bool'          => (bool) $value,
             'json'                     => is_string($value) ? json_decode($value, true) : $value,
             'datetime', 'timestamp', 'date', 'time' => new \DateTimeImmutable((string) $value),
-            'relation'                 => $value, // FK ID — loaded separately by RelationLoader
+            'relation'                 => $value,
             default                    => (string) $value,
         };
     }
@@ -254,6 +274,11 @@ final class EntityHydrator
     {
         if ($value === null) {
             return null;
+        }
+
+        // BackedEnum: extract the backed value
+        if (str_starts_with($type, 'enum:') && $value instanceof \BackedEnum) {
+            return $value->value;
         }
 
         return match ($type) {

@@ -567,6 +567,53 @@ final class QueryBuilder
         return $this;
     }
 
+    /**
+     * Add a WHERE condition comparing the DATE part of a column.
+     * Pushes DATE() extraction to the DB engine.
+     *
+     * @example ->whereDate('created_at', '=', '2026-01-15')
+     */
+    public function whereDate(string $column, string $operator, string $date): self
+    {
+        $dateExpr = $this->grammar->compileDateExtract($column);
+        $this->wheres[] = new WhereClause(
+            column: "{$dateExpr} {$operator} ?",
+            operator: Operator::Raw,
+            value: null,
+            boolean: WhereBoolean::And,
+            bindings: [$date],
+        );
+        return $this;
+    }
+
+    /**
+     * Add a WHERE JSON contains condition (cross-DB).
+     * Checks if a JSON array column contains a given value.
+     *
+     * @example ->whereJsonContains('tags', 'php')
+     */
+    public function whereJsonContains(string $column, mixed $value): self
+    {
+        $jsonExpr = $this->grammar->compileJsonContains($column);
+        $this->wheres[] = new WhereClause(
+            column: $jsonExpr,
+            operator: Operator::Raw,
+            value: null,
+            boolean: WhereBoolean::And,
+            bindings: [is_string($value) || is_int($value) || is_float($value) ? json_encode($value) : json_encode($value)],
+        );
+        return $this;
+    }
+
+    /**
+     * Add a WHERE NOT BETWEEN condition.
+     */
+    public function whereNotBetween(string $column, mixed $min, mixed $max): self
+    {
+        $this->wheres[] = new WhereClause($column, Operator::NotBetween, [$min, $max], WhereBoolean::And);
+        return $this;
+    }
+
     // ── ORDER BY ────────────────────────────────────────────────
 
     /**
@@ -1203,6 +1250,31 @@ final class QueryBuilder
     }
 
     /**
+     * Atomically increment a column value.
+     * Generates: UPDATE table SET column = column + ? WHERE ...
+     * DB-side arithmetic prevents race conditions under concurrency.
+     *
+     * @param array<string, mixed> $extra Additional columns to update.
+     */
+    public function increment(string $column, int|float $amount = 1, array $extra = []): int
+    {
+        $sets = [new RawExpression("{$column} = {$column} + ?", [$amount])];
+        return $this->incrementOrDecrement($sets, $extra);
+    }
+
+    /**
+     * Atomically decrement a column value.
+     * Generates: UPDATE table SET column = column - ? WHERE ...
+     *
+     * @param array<string, mixed> $extra Additional columns to update.
+     */
+    public function decrement(string $column, int|float $amount = 1, array $extra = []): int
+    {
+        $sets = [new RawExpression("{$column} = {$column} - ?", [$amount])];
+        return $this->incrementOrDecrement($sets, $extra);
+    }
+
+    /**
      * Execute an UPSERT.
      *
      * @param array<string, mixed>     $values         All column values.
@@ -1395,6 +1467,47 @@ final class QueryBuilder
         $stmt = $this->prepareStatement($conn, $sql);
         $stmt->execute($bindings);
         return $stmt->rowCount();
+    }
+
+    /**
+     * Execute an atomic increment/decrement UPDATE.
+     *
+     * @param list<RawExpression>    $sets  SET expressions (e.g. "views = views + ?").
+     * @param array<string, mixed>  $extra Additional column=value pairs.
+     */
+    private function incrementOrDecrement(array $sets, array $extra): int
+    {
+        $bindings = [];
+        $setParts = [];
+
+        foreach ($sets as $expr) {
+            $setParts[] = $expr->toSql();
+            foreach ($expr->getBindings() as $b) {
+                $bindings[] = $b;
+            }
+        }
+
+        foreach ($extra as $col => $val) {
+            $setParts[] = "{$col} = ?";
+            $bindings[] = $val;
+        }
+
+        $sql = "UPDATE {$this->fromTable} SET " . implode(', ', $setParts);
+
+        // Compile WHERE clause
+        if ($this->wheres !== []) {
+            $whereParts = [];
+            foreach ($this->wheres as $i => $where) {
+                $fragment = $where->toSql();
+                $whereParts[] = $i === 0 ? $fragment : $where->boolean->value . ' ' . $fragment;
+                foreach ($where->getBindings() as $b) {
+                    $bindings[] = $b;
+                }
+            }
+            $sql .= ' WHERE ' . implode(' ', $whereParts);
+        }
+
+        return $this->executeWrite($sql, $bindings);
     }
 
     /**

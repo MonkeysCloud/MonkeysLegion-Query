@@ -875,8 +875,8 @@ final class PulledChangesTest extends TestCase
 
         $this->pdo->exec('DELETE FROM users WHERE id = 1');
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('no longer exists');
+        $this->expectException(\MonkeysLegion\Query\Exceptions\EntityNotFoundException::class);
+        $this->expectExceptionMessage("not found");
         $repo->refresh($user);
     }
 

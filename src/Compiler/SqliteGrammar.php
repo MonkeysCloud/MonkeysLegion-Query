@@ -126,4 +126,17 @@ final class SqliteGrammar implements GrammarInterface
         // SQLite does not support row-level locking modifiers
         return '';
     }
+
+    #[\Override]
+    public function compileJsonContains(string $column, string $placeholder = '?'): string
+    {
+        // SQLite 3.38+: use json_each to search array membership
+        return "EXISTS(SELECT 1 FROM json_each({$column}) WHERE value = {$placeholder})";
+    }
+
+    #[\Override]
+    public function compileDateExtract(string $column): string
+    {
+        return "DATE({$column})";
+    }
 }
