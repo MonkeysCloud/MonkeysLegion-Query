@@ -48,7 +48,7 @@ final class UnitOfWork
     /**
      * Schedule an entity for update (only changed fields).
      */
-    public function scheduleUpdate(object $entity, string $table, string|int $id): void
+    public function scheduleUpdate(object $entity, string $table, string|int $id, string $primaryKey = 'id'): void
     {
         $objectId = spl_object_id($entity);
         $currentData = $this->hydrator->dehydrate($entity);
@@ -57,7 +57,7 @@ final class UnitOfWork
         // Compute delta
         $changed = [];
         foreach ($currentData as $key => $value) {
-            if ($key === 'id') {
+            if ($key === $primaryKey) {
                 continue;
             }
             $original = $originalData[$key] ?? null;
@@ -72,16 +72,16 @@ final class UnitOfWork
         }
 
         if ($changed !== []) {
-            $this->pendingUpdates[] = ['entity' => $entity, 'table' => $table, 'data' => $changed, 'id' => $id];
+            $this->pendingUpdates[] = ['entity' => $entity, 'table' => $table, 'data' => $changed, 'id' => $id, 'primaryKey' => $primaryKey];
         }
     }
 
     /**
      * Schedule an entity for deletion.
      */
-    public function scheduleDelete(string $table, string|int $id): void
+    public function scheduleDelete(string $table, string|int $id, string $primaryKey = 'id'): void
     {
-        $this->pendingDeletes[] = ['table' => $table, 'id' => $id];
+        $this->pendingDeletes[] = ['table' => $table, 'id' => $id, 'primaryKey' => $primaryKey];
     }
 
     /**
@@ -183,8 +183,9 @@ final class UnitOfWork
 
             // Updates
             foreach ($this->pendingUpdates as $item) {
+                $pk = $item['primaryKey'] ?? 'id';
                 $getBuilder($item['table'])
-                    ->where('id', '=', $item['id'])
+                    ->where($pk, '=', $item['id'])
                     ->update($item['data']);
 
                 $this->snapshot($item['entity']);
@@ -193,8 +194,9 @@ final class UnitOfWork
 
             // Deletes
             foreach ($this->pendingDeletes as $item) {
+                $pk = $item['primaryKey'] ?? 'id';
                 $getBuilder($item['table'])
-                    ->where('id', '=', $item['id'])
+                    ->where($pk, '=', $item['id'])
                     ->delete();
 
                 $counts['deletes']++;
@@ -243,8 +245,9 @@ final class UnitOfWork
                 continue; // Entity was GC'd or removed
             }
 
+            $primaryKey = $this->resolvePrimaryKeyForEntity($entity);
             $currentData = $this->hydrator->dehydrate($entity);
-            $id = $currentData['id'] ?? null;
+            $id = $currentData[$primaryKey] ?? null;
             if ($id === null) {
                 continue;
             }
@@ -259,7 +262,7 @@ final class UnitOfWork
             // Compute delta
             $changed = [];
             foreach ($currentData as $key => $value) {
-                if ($key === 'id') {
+                if ($key === $primaryKey) {
                     continue;
                 }
 
@@ -274,7 +277,6 @@ final class UnitOfWork
             }
 
             if ($changed !== []) {
-                // Resolve table from pending inserts or use entity class name
                 $table = $this->resolveTableForEntity($entity);
                 if ($table !== null) {
                     $this->pendingUpdates[] = [
@@ -282,6 +284,7 @@ final class UnitOfWork
                         'table' => $table,
                         'data' => $changed,
                         'id' => $id,
+                        'primaryKey' => $primaryKey,
                     ];
                 }
             }
@@ -302,15 +305,15 @@ final class UnitOfWork
         ];
     }
 
-    /** @var array<int, array{entity: object, table: string}> objectId → entity+table for reverse lookup */
+    /** @var array<int, array{entity: object, table: string, primaryKey: string}> objectId → entity+table+pk for reverse lookup */
     private array $trackedEntities = [];
 
     /**
      * Register an entity for auto-dirty detection.
      */
-    public function track(object $entity, string $table): void
+    public function track(object $entity, string $table, string $primaryKey = 'id'): void
     {
-        $this->trackedEntities[spl_object_id($entity)] = ['entity' => $entity, 'table' => $table];
+        $this->trackedEntities[spl_object_id($entity)] = ['entity' => $entity, 'table' => $table, 'primaryKey' => $primaryKey];
     }
 
     private function findEntityByObjectId(int $objectId): ?object
@@ -321,5 +324,10 @@ final class UnitOfWork
     private function resolveTableForEntity(object $entity): ?string
     {
         return $this->trackedEntities[spl_object_id($entity)]['table'] ?? null;
+    }
+
+    private function resolvePrimaryKeyForEntity(object $entity): string
+    {
+        return $this->trackedEntities[spl_object_id($entity)]['primaryKey'] ?? 'id';
     }
 }

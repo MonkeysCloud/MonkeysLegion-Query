@@ -54,6 +54,9 @@ abstract class EntityRepository
     /** Whether ALL global scopes are disabled on this clone. */
     private bool $allScopesDisabled = false;
 
+    /** @var list<array{name: string, args: array<mixed>}> Pending named scopes for the next query. */
+    private array $pendingScopes = [];
+
     public function __construct(
         private readonly ConnectionManagerInterface $manager,
         ?string $connectionName = null,
@@ -80,6 +83,14 @@ abstract class EntityRepository
                 if (!in_array($name, $this->disabledScopes, true)) {
                     $qb = $method->invoke($this, $qb) ?? $qb;
                 }
+            }
+        }
+
+        // Apply pending named scopes
+        foreach ($this->pendingScopes as $scope) {
+            $scopeMethod = $this->resolveNamedScope($scope['name']);
+            if ($scopeMethod !== null) {
+                $qb = $scopeMethod->invoke($this, $qb, ...$scope['args']) ?? $qb;
             }
         }
 
@@ -136,9 +147,7 @@ abstract class EntityRepository
     public function scope(string $name, mixed ...$args): static
     {
         $clone = clone $this;
-        // Resolve and apply the named scope immediately via a stored callback
-        $clone->eagerRelations = $this->eagerRelations;
-        // We store the scope for application in query()
+        $clone->pendingScopes[] = ['name' => $name, 'args' => $args];
         return $clone;
     }
 
@@ -396,7 +405,7 @@ abstract class EntityRepository
             $this->unitOfWork->scheduleInsert($entity, $this->table);
         } else {
             // Existing entity → schedule update
-            $this->unitOfWork->scheduleUpdate($entity, $this->table, $id);
+            $this->unitOfWork->scheduleUpdate($entity, $this->table, $id, $this->primaryKey);
         }
     }
 
@@ -416,7 +425,7 @@ abstract class EntityRepository
             $id = $entityOrId;
         }
 
-        $this->unitOfWork->scheduleDelete($this->table, $id);
+        $this->unitOfWork->scheduleDelete($this->table, $id, $this->primaryKey);
         $this->identityMap->remove($this->entityClass, $id);
     }
 
@@ -750,7 +759,7 @@ abstract class EntityRepository
         if (isset($row[$pk])) {
             $this->identityMap->set($this->entityClass, $row[$pk], $entity);
             $this->unitOfWork->snapshot($entity);
-            $this->unitOfWork->track($entity, $this->table);
+            $this->unitOfWork->track($entity, $this->table, $this->primaryKey);
         }
 
         return $entity;
@@ -828,5 +837,33 @@ abstract class EntityRepository
         }
 
         return $this->globalScopeMethods;
+    }
+
+    /**
+     * Resolve a named (non-global) scope method by name.
+     * Checks both the #[Scope(name: '...')] attribute and the method name itself.
+     */
+    private function resolveNamedScope(string $name): ?\ReflectionMethod
+    {
+        $ref = new \ReflectionClass($this);
+
+        foreach ($ref->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            // Check by method name directly
+            if ($method->getName() === $name) {
+                return $method;
+            }
+
+            // Check by #[Scope(name: '...')] attribute
+            $attrs = $method->getAttributes(Scope::class);
+            if ($attrs !== []) {
+                /** @var Scope $scope */
+                $scope = $attrs[0]->newInstance();
+                if (!$scope->isGlobal && $scope->name === $name) {
+                    return $method;
+                }
+            }
+        }
+
+        return null;
     }
 }
