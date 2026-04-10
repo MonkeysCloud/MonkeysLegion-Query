@@ -1,20 +1,27 @@
 {
   "name": "monkeyscloud/monkeyslegion-query",
-  "description": "Lightweight Query Builder & Micro‑ORM for MonkeysLegion",
+  "description": "Performance-first Query Builder & Micro-ORM for MonkeysLegion v2",
   "type": "library",
   "license": "MIT",
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "repositories": [
+    {
+      "type": "vcs",
+      "url": "https://github.com/MonkeysCloud/MonkeysLegion-Database"
+    }
+  ],
   "require": {
     "php": "^8.4",
-    "monkeyscloud/monkeyslegion-database": "^1.0",
+    "monkeyscloud/monkeyslegion-database": "dev-2.x-dev",
     "monkeyscloud/monkeyslegion-entity": "^1.0",
     "psr/simple-cache": "^3.0",
     "psr/log": "^3.0",
     "ext-pdo": "*"
   },
-
   "autoload": {
     "psr-4": {
-      "MonkeysLegion\\": "src/"
+      "MonkeysLegion\\Query\\": "src/"
     }
   },
   "autoload-dev": {
@@ -24,7 +31,8 @@
   },
   "extra": {
     "branch-alias": {
-      "dev-main": "1.0.x-dev"
+      "dev-main": "1.0.x-dev",
+      "dev-2.x-dev": "2.0.x-dev"
     }
   },
   "require-dev": {

@@ -34,3 +34,4 @@
 .DS_Store
 Thumbs.db.phpunit.cache/
 .phpunit.cache/
+*.bak
