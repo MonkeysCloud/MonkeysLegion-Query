@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace MonkeysLegion\Query\Repository;
 
 use MonkeysLegion\Database\Contracts\ConnectionManagerInterface;
+use MonkeysLegion\Entity\Attributes\Timestamps;
 use MonkeysLegion\Query\Query\QueryBuilder;
 
 /**
@@ -41,6 +42,7 @@ final class UnitOfWork
      */
     public function scheduleInsert(object $entity, string $table): void
     {
+        $this->applyTimestamps($entity, isInsert: true);
         $data = $this->hydrator->dehydrate($entity);
         $this->pendingInserts[] = ['entity' => $entity, 'table' => $table, 'data' => $data];
     }
@@ -50,6 +52,7 @@ final class UnitOfWork
      */
     public function scheduleUpdate(object $entity, string $table, string|int $id, string $primaryKey = 'id'): void
     {
+        $this->applyTimestamps($entity, isInsert: false);
         $objectId = spl_object_id($entity);
         $currentData = $this->hydrator->dehydrate($entity);
         $originalData = $this->snapshots[$objectId] ?? [];
@@ -329,5 +332,34 @@ final class UnitOfWork
     private function resolvePrimaryKeyForEntity(object $entity): string
     {
         return $this->trackedEntities[spl_object_id($entity)]['primaryKey'] ?? 'id';
+    }
+
+    /**
+     * Auto-set created_at/updated_at for entities annotated with #[Timestamps].
+     *
+     * On insert: sets created_at (if uninitialized) and updated_at.
+     * On update: sets updated_at only.
+     * Uses reflection to bypass private(set) visibility.
+     */
+    private function applyTimestamps(object $entity, bool $isInsert): void
+    {
+        $ref = new \ReflectionClass($entity);
+
+        if (empty($ref->getAttributes(Timestamps::class))) {
+            return;
+        }
+
+        $now = new \DateTimeImmutable();
+
+        if ($isInsert && $ref->hasProperty('created_at')) {
+            $prop = $ref->getProperty('created_at');
+            if (!$prop->isInitialized($entity)) {
+                $prop->setValue($entity, $now);
+            }
+        }
+
+        if ($ref->hasProperty('updated_at')) {
+            $ref->getProperty('updated_at')->setValue($entity, $now);
+        }
     }
 }
