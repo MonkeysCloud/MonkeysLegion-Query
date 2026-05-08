@@ -745,7 +745,7 @@ abstract class EntityRepository
      *
      * @return TEntity
      */
-    private function hydrateAndTrack(array $row): object
+    protected function hydrateAndTrack(array $row): object
     {
         $pk = $this->primaryKey;
 
@@ -789,7 +789,7 @@ abstract class EntityRepository
      *
      * @return list<TEntity>
      */
-    private function hydrateAll(array $rows): array
+    protected function hydrateAll(array $rows): array
     {
         $entities = array_map(fn(array $row) => $this->hydrateAndTrack($row), $rows);
 

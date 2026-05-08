@@ -53,6 +53,19 @@ final class EntityHydrator
             }
 
             $value = $this->castFromDatabase($row[$column], $mapping['type'], $mapping['prop']);
+
+            // For relation columns (ManyToOne/OneToOne), the DB value is a scalar FK.
+            // If the property expects an entity object, store the FK on the companion _id
+            // property instead (e.g. company_id for Company $company).
+            if ($mapping['type'] === 'relation' && !is_object($value)) {
+                $fkProp = $column; // e.g. company_id
+                if ($ref->hasProperty($fkProp)) {
+                    $fkReflProp = $ref->getProperty($fkProp);
+                    $fkReflProp->setValue($entity, $value !== null ? (int) $value : null);
+                }
+                continue;
+            }
+
             $mapping['prop']->setValue($entity, $value);
         }
 
