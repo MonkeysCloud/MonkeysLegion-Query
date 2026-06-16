@@ -46,6 +46,15 @@ final class EntityHydrator
         $entity = $ref->newInstanceWithoutConstructor();
         $fieldMap = $this->getFieldMap($class);
 
+        // Build a quick lookup of relation columns so we can match raw FK keys
+        // (e.g. 'user_id' passed in $row) to their relation mapping.
+        $relationColumnMap = [];
+        foreach ($fieldMap as $mapping) {
+            if ($mapping['type'] === 'relation') {
+                $relationColumnMap[$mapping['column']] = $mapping;
+            }
+        }
+
         foreach ($fieldMap as $mapping) {
             $column = $mapping['column'];
             if (!array_key_exists($column, $row)) {
@@ -55,13 +64,29 @@ final class EntityHydrator
             $value = $this->castFromDatabase($row[$column], $mapping['type'], $mapping['prop']);
 
             // For relation columns (ManyToOne/OneToOne), the DB value is a scalar FK.
-            // If the property expects an entity object, store the FK on the companion _id
-            // property instead (e.g. company_id for Company $company).
             if ($mapping['type'] === 'relation' && !is_object($value)) {
-                $fkProp = $column; // e.g. company_id
+                $fkProp = $column; // e.g. org_id
                 if ($ref->hasProperty($fkProp)) {
+                    // Entity has a companion _id property — set it directly.
                     $fkReflProp = $ref->getProperty($fkProp);
                     $fkReflProp->setValue($entity, $value !== null ? (int) $value : null);
+                } elseif ($value !== null) {
+                    // No companion _id property — create a stub entity with just the id set.
+                    // This allows dehydrate() to later extract the FK via getEntityId().
+                    $relType = $mapping['prop']->getType();
+                    if ($relType instanceof \ReflectionNamedType && !$relType->isBuiltin()) {
+                        $relClass = $relType->getName();
+                        try {
+                            $relRef = self::reflect($relClass);
+                            $stub = $relRef->newInstanceWithoutConstructor();
+                            if ($relRef->hasProperty('id')) {
+                                $relRef->getProperty('id')->setValue($stub, (int) $value);
+                            }
+                            $mapping['prop']->setValue($entity, $stub);
+                        } catch (\Throwable) {
+                            // If stub creation fails, skip silently
+                        }
+                    }
                 }
                 continue;
             }
