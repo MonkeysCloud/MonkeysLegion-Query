@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Tests\Unit\Repository;
 
 use MonkeysLegion\Entity\Attributes\Field;
+use MonkeysLegion\Entity\Attributes\Id;
+use MonkeysLegion\Entity\Attributes\ManyToOne;
 use MonkeysLegion\Query\Repository\EntityHydrator;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
@@ -32,6 +34,34 @@ class TestUser
 
     #[Field(type: 'datetime', nullable: true)]
     public ?\DateTimeImmutable $created_at = null;
+}
+
+// ── ManyToOne Test Entities ──────────────────────────────────────
+
+class TestOrg
+{
+    #[Id]
+    #[Field(type: 'integer')]
+    public int $id;
+
+    #[Field(type: 'string')]
+    public string $name;
+}
+
+class TestMembership
+{
+    #[Id]
+    #[Field(type: 'integer')]
+    public int $id;
+
+    #[ManyToOne(targetEntity: TestOrg::class)]
+    public TestOrg $org;
+
+    #[ManyToOne(targetEntity: TestUser::class)]
+    public TestUser $user;
+
+    #[Field(type: 'string', length: 16, default: 'member')]
+    public string $role = 'member';
 }
 
 #[CoversClass(EntityHydrator::class)]
@@ -167,5 +197,63 @@ final class EntityHydratorTest extends TestCase
         ]);
 
         self::assertNull($entity->metadata);
+    }
+
+    // ── ManyToOne FK Hydration ──────────────────────────────────
+
+    public function testHydrateManyToOneCreatesStubEntity(): void
+    {
+        $entity = $this->hydrator->hydrate(TestMembership::class, [
+            'id'      => 1,
+            'org_id'  => 42,
+            'user_id' => 7,
+            'role'    => 'owner',
+        ]);
+
+        self::assertInstanceOf(TestMembership::class, $entity);
+        self::assertSame(1, $entity->id);
+        self::assertSame('owner', $entity->role);
+
+        // The org property should be a stub TestOrg with id = 42
+        self::assertInstanceOf(TestOrg::class, $entity->org);
+        self::assertSame(42, $entity->org->id);
+
+        // The user property should be a stub TestUser with id = 7
+        self::assertInstanceOf(TestUser::class, $entity->user);
+        self::assertSame(7, $entity->user->id);
+    }
+
+    public function testDehydrateManyToOneExtractsFk(): void
+    {
+        $entity = $this->hydrator->hydrate(TestMembership::class, [
+            'id'      => 1,
+            'org_id'  => 42,
+            'user_id' => 7,
+            'role'    => 'admin',
+        ]);
+
+        $data = $this->hydrator->dehydrate($entity);
+
+        self::assertSame(1, $data['id']);
+        self::assertSame(42, $data['org_id']);
+        self::assertSame(7, $data['user_id']);
+        self::assertSame('admin', $data['role']);
+    }
+
+    public function testHydrateManyToOneNullFk(): void
+    {
+        $entity = $this->hydrator->hydrate(TestMembership::class, [
+            'id'      => 1,
+            'org_id'  => null,
+            'user_id' => null,
+            'role'    => 'member',
+        ]);
+
+        self::assertSame(1, $entity->id);
+        self::assertSame('member', $entity->role);
+        // org and user should NOT be initialized (null FK)
+        $ref = new \ReflectionClass($entity);
+        self::assertFalse($ref->getProperty('org')->isInitialized($entity));
+        self::assertFalse($ref->getProperty('user')->isInitialized($entity));
     }
 }
