@@ -41,7 +41,7 @@
     "squizlabs/php_codesniffer": "^4.0"
   },
   "scripts": {
-    "test": "phpunit",
+    "test": "phpunit tests",
     "test:unit": "phpunit --testsuite=Unit",
     "test:integration": "phpunit --testsuite=Integration",
     "test:coverage": "phpunit --coverage-html coverage",
