@@ -71,20 +71,34 @@ final class EntityHydrator
                     $fkReflProp = $ref->getProperty($fkProp);
                     $fkReflProp->setValue($entity, $value !== null ? (int) $value : null);
                 } elseif ($value !== null) {
-                    // No companion _id property — create a stub entity with just the id set.
-                    // This allows dehydrate() to later extract the FK via getEntityId().
-                    $relType = $mapping['prop']->getType();
-                    if ($relType instanceof \ReflectionNamedType && !$relType->isBuiltin()) {
-                        $relClass = $relType->getName();
-                        try {
-                            $relRef = self::reflect($relClass);
-                            $stub = $relRef->newInstanceWithoutConstructor();
-                            if ($relRef->hasProperty('id')) {
-                                $relRef->getProperty('id')->setValue($stub, (int) $value);
+                    // No companion _id property. First try to assign the scalar value directly
+                    // to the relation property (handles union types like PerfPost::$user).
+                    try {
+                        $mapping['prop']->setValue($entity, (int) $value);
+                    } catch (\TypeError) {
+                        // The property does not accept integer directly. Create a stub entity.
+                        $targetClass = null;
+                        $m2oAttrs = $mapping['prop']->getAttributes(ManyToOne::class);
+                        if ($m2oAttrs) {
+                            $targetClass = $m2oAttrs[0]->newInstance()->targetEntity;
+                        } else {
+                            $o2oAttrs = $mapping['prop']->getAttributes(OneToOne::class);
+                            if ($o2oAttrs) {
+                                $targetClass = $o2oAttrs[0]->newInstance()->targetEntity;
                             }
-                            $mapping['prop']->setValue($entity, $stub);
-                        } catch (\Throwable) {
-                            // If stub creation fails, skip silently
+                        }
+
+                        if ($targetClass !== null) {
+                            try {
+                                $relRef = self::reflect($targetClass);
+                                $stub = $relRef->newInstanceWithoutConstructor();
+                                if ($relRef->hasProperty('id')) {
+                                    $relRef->getProperty('id')->setValue($stub, (int) $value);
+                                }
+                                $mapping['prop']->setValue($entity, $stub);
+                            } catch (\Throwable) {
+                                // If stub creation fails, skip silently
+                            }
                         }
                     }
                 }
@@ -117,7 +131,12 @@ final class EntityHydrator
             }
 
             $value = $prop->getValue($entity);
-            $data[$mapping['column']] = $this->castToDatabase($value, $mapping['type']);
+            $dbValue = $this->castToDatabase($value, $mapping['type']);
+            // Avoid overwriting a set scalar value (like user_id = 9) with null from an uninitialized or empty relation mapping
+            if ($dbValue === null && isset($data[$mapping['column']])) {
+                continue;
+            }
+            $data[$mapping['column']] = $dbValue;
         }
 
         return $data;

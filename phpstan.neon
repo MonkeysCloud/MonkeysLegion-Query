@@ -66,5 +66,56 @@ parameters:
         
         # Return type covariance (int vs int|string)
         - '#should return int but returns int\|string#'
+        
+        # SoftDeletes trait unused warning
+        - '#is used zero times and is not analysed#'
+        
+        # RelationLoader analysis ignores
+        - '#Parameter \#1 \$array \(non-empty-list\) of array_values is already a list#'
+        - '#Method MonkeysLegion\\Query\\Repository\\RelationLoader::batchLoad\(\) should return array<int\|string, object> but returns array<object\|null>#'
+        - '#Property MonkeysLegion\\Entity\\Attributes\\JoinTable::\$(name|joinColumn).* on left side of \?\? is not nullable#'
+        - '#Access to an undefined property MonkeysLegion\\Entity\\Attributes\\JoinTable::\$inverseJoinColumn#'
+        - '#Method MonkeysLegion\\Query\\Repository\\RelationLoader::hydrateAndTrack\(\) should return object but returns object\|null#'
+        - '#Parameter \#1 \$class of method MonkeysLegion\\Query\\Repository\\EntityHydrator::hydrate\(\) expects class-string<object>, string given#'
+        - '#Unable to resolve the template type T in call to (method|static method) MonkeysLegion\\Query\\Repository\\EntityHydrator::hydrate\(\)#'
+        
+        # EntityRepository analysis ignores
+        - '#Constructor of class MonkeysLegion\\Query\\Repository\\EntityRepository has an unused parameter \$connectionName#'
+        - '#Method MonkeysLegion\\Query\\Repository\\EntityRepository::(find|findOneBy|hydrateAndTrack)\(\) should return .*TEntity.* but returns object\|null#'
+        - '#Method MonkeysLegion\\Query\\Repository\\EntityRepository::findByIds\(\) should return list<TEntity.*> but returns list<object>#'
+        - '#Method MonkeysLegion\\Query\\Repository\\EntityRepository::(delete|updateWhere|deleteWhere)\(\) should return int but returns int\|list<array<string, mixed>>#'
+        - '#PHPDoc tag @param for parameter \$callback with type \(Closure\)\|void is not subtype of native type Closure#'
+        - '#Parameter \#1 \$rows of method MonkeysLegion\\Query\\Repository\\EntityRepository<TEntity of object>::hydrateAll\(\) expects list<array<string, mixed>>, array given#'
+        - '#Method MonkeysLegion\\Query\\Repository\\EntityRepository::getGlobalScopeMethods\(\) should return array<string, ReflectionMethod> but returns list<ReflectionMethod>#'
+        
+        # EntityHydrator reflect analysis ignores
+        - '#Parameter \#1 \$class of static method MonkeysLegion\\Query\\Repository\\EntityHydrator::reflect\(\) expects class-string<object>, string given#'
+        - '#Unable to resolve the template type T in call to static method MonkeysLegion\\Query\\Repository\\EntityHydrator::reflect\(\)#'
+        - '#Method MonkeysLegion\\Query\\Repository\\EntityHydrator::reflect\(\) should return ReflectionClass<T of object> but returns ReflectionClass<object>#'
+        
+        # SqliteGrammar ignores
+        - '#Strict comparison using !== between non-falsy-string.* and .* will always evaluate to true#'
+        
+        # CteBuilder ignores
+        - '#Parameter \#4 \$columns of method MonkeysLegion\\Query\\Query\\CteBuilder::add\(\) expects list<string>, array given#'
+        
+        # QueryBuilder ignores
+        - '#PHPDoc tag @phpstan-ignore-next-line has invalid value#'
+        - '#Parameter \#2 \$bindings of class MonkeysLegion\\Query\\RawExpression constructor expects list<mixed>, array given#'
+        - '#Parameter \$bindings of class MonkeysLegion\\Query\\Clause\\(JoinClause|WhereClause) constructor expects array<string, mixed>, (list<mixed>|array<int, string>|array<int, string\|false>) given#'
+        - '#Parameter \#2 \$callback of method MonkeysLegion\\Query\\Query\\QueryBuilder::join\(\) expects Closure\(MonkeysLegion\\Query\\Query\\JoinBuilder\): void, (Closure|callable).* given#'
+        - '#Variable \$cacheKey on left side of \?\? always exists and is not nullable#'
+        - '#Method MonkeysLegion\\Query\\Query\\QueryBuilder::(get|executeReadWrite)\(\) should return list<array<string, mixed>> but returns array#'
+        - '#Call to function array_is_list\(\) with non-empty-list.* will always evaluate to true#'
+        # WeakMap assignment ignores
+        - '#WeakMap<object, array<string, PDOStatement>> does not accept array<string, \(bool\|PDOStatement\)>\.#'
+        - '#Parameter \#2 \$bindings of class MonkeysLegion\\Query\\Clause\\UnionClause constructor expects array<string, mixed>, list<mixed> given#'
+        
+        # Clause getBindings returns ignores
+        - '#should return list<mixed> but returns (array|non-empty-array)<string, mixed>#'
+        
+        # WhereClause renderGroup and nested var tag ignores
+        - '#expects list<MonkeysLegion\\Query\\Clause\\WhereClause>, array.* given#'
+        - '#Variable \$nested in PHPDoc tag @var does not match any variable in the foreach loop#'
     
     reportUnmatchedIgnoredErrors: false

@@ -22,10 +22,10 @@ final class UnitOfWork
     /** @var list<array{entity: object, table: string, data: array<string, mixed>}> */
     private array $pendingInserts = [];
 
-    /** @var list<array{entity: object, table: string, data: array<string, mixed>, id: string|int}> */
+    /** @var list<array{entity: object, table: string, data: array<string, mixed>, id: string|int, primaryKey?: string}> */
     private array $pendingUpdates = [];
 
-    /** @var list<array{table: string, id: string|int}> */
+    /** @var list<array{table: string, id: string|int, primaryKey?: string}> */
     private array $pendingDeletes = [];
 
     /** @var array<int, array<string, mixed>> objectId → original snapshot */
@@ -131,7 +131,7 @@ final class UnitOfWork
                 $explicitId = [];
                 $autoIncrement = [];
                 foreach ($items as $item) {
-                    if (isset($item['data']['id']) && $item['data']['id'] !== '' && $item['data']['id'] !== null) {
+                    if (isset($item['data']['id']) && $item['data']['id'] !== '') {
                         $explicitId[] = $item;
                     } else {
                         $autoIncrement[] = $item;
