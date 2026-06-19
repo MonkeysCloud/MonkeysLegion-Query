@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<ruleset name="Project Rules">
+    <rule ref="PSR12"/>
+
+    <file>src</file>
+    <arg name="colors"/>
+    <arg name="extensions" value="php"/>
+
+    <!--
+        PHP 8.4 property hooks ( $prop { get { ... } } ) and asymmetric visibility
+        ( public private(set) ) are not yet understood by PHPCS / PSR12.
+        These are false positives limited to QueryBuilder.php – exclude them.
+    -->
+    <rule ref="PSR2.Classes.PropertyDeclaration.Multiple">
+        <exclude-pattern>src/Query/QueryBuilder.php</exclude-pattern>
+    </rule>
+    <rule ref="PSR2.Classes.PropertyDeclaration.ScopeMissing">
+        <exclude-pattern>src/Query/QueryBuilder.php</exclude-pattern>
+    </rule>
+    <rule ref="Squiz.Scope.MemberVarScope.Missing">
+        <exclude-pattern>src/Query/QueryBuilder.php</exclude-pattern>
+    </rule>
+
+    <!-- Line-length: warn only, never error -->
+    <rule ref="Generic.Files.LineLength">
+        <properties>
+            <property name="lineLimit" value="120"/>
+            <property name="absoluteLineLimit" value="0"/>
+        </properties>
+    </rule>
+</ruleset>

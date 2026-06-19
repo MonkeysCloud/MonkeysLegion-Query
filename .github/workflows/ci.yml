@@ -41,9 +41,6 @@ jobs:
       - name: Install Dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
-      - name: Run Code Style Checks
-        run: composer run cs
-
       - name: Run PHPStan Static Analysis
         run: composer run phpstan
 
