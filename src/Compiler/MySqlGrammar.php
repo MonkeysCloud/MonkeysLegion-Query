@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Compiler;
@@ -73,7 +74,7 @@ final class MySqlGrammar implements GrammarInterface
     public function compileJsonPath(string $column, string $path): string
     {
         // MySQL 5.7+ / MariaDB 10.2+: column->>'$.path'
-        $jsonPath = str_starts_with($path, '$') ? $path : '$.'. $path;
+        $jsonPath = str_starts_with($path, '$') ? $path : '$.' . $path;
         return "{$column}->>'{$jsonPath}'";
     }
 

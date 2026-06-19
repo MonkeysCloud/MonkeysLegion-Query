@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Tests\Support;
@@ -29,16 +30,23 @@ final class TestConnection implements ConnectionInterface
         private readonly PDO $pdoInstance,
         private readonly DatabaseDriver $driver = DatabaseDriver::SQLite,
         private readonly string $name = 'test',
-    ) {}
+    ) {
+    }
 
     public function resetQueryCount(): void
     {
         $this->queryCountValue = 0;
     }
 
-    public function connect(): void {}
-    public function disconnect(): void {}
-    public function reconnect(): void {}
+    public function connect(): void
+    {
+    }
+    public function disconnect(): void
+    {
+    }
+    public function reconnect(): void
+    {
+    }
 
     public function isConnected(): bool
     {

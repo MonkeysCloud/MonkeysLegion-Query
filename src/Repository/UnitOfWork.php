@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Repository;
@@ -35,7 +36,8 @@ final class UnitOfWork
         private readonly ConnectionManagerInterface $manager,
         private readonly IdentityMap $identityMap,
         private readonly EntityHydrator $hydrator,
-    ) {}
+    ) {
+    }
 
     /**
      * Schedule an entity for insertion.

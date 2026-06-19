@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -18,7 +19,8 @@ final readonly class LimitOffsetClause implements ExpressionInterface
     public function __construct(
         public ?int $limit = null,
         public ?int $offset = null,
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Query;
@@ -31,7 +32,8 @@ final class JoinBuilder
         private readonly string $table,
         private readonly ?string $alias,
         private readonly JoinType $type,
-    ) {}
+    ) {
+    }
 
     // ── Condition Methods ───────────────────────────────────────
 

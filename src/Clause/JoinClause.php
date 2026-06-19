@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -29,7 +30,8 @@ final readonly class JoinClause implements ExpressionInterface
         public ?string $alias = null,
         public array $conditions = [],
         private array $bindings = [],
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

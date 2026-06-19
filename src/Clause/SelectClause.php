@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -22,7 +23,8 @@ final readonly class SelectClause implements ExpressionInterface
     public function __construct(
         public array $columns = ['*'],
         public bool $distinct = false,
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

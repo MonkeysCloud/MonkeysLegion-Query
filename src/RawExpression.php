@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query;
@@ -27,7 +28,8 @@ final readonly class RawExpression implements ExpressionInterface
     public function __construct(
         public string $sql,
         private array $bindings = [],
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

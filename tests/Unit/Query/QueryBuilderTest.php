@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Tests\Unit\Query;
@@ -172,7 +173,9 @@ final class QueryBuilderTest extends TestCase
     {
         $sql = $this->qb()
             ->from('users', 'u')
-            ->join('orders', fn($j) => $j
+            ->join(
+                'orders',
+                fn($j) => $j
                 ->on('u.id', '=', 'orders.user_id')
                 ->andOn('orders.status', '=', "'active'"),
                 'o',

@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Repository;
@@ -281,7 +282,8 @@ final class EntityHydrator
         $name = $type instanceof \ReflectionNamedType ? $type->getName() : 'string';
 
         // Check for BackedEnum
-        if ($type instanceof \ReflectionNamedType
+        if (
+            $type instanceof \ReflectionNamedType
             && !$type->isBuiltin()
             && is_subclass_of($name, \BackedEnum::class)
         ) {

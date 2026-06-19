@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Tests\Unit\Query;
@@ -249,7 +250,8 @@ final class Phase5Test extends TestCase
     {
         $results = $this->qb()
             ->select(['name'])
-            ->selectSub(fn(QueryBuilder $sq) => $sq
+            ->selectSub(
+                fn(QueryBuilder $sq) => $sq
                 ->from('posts')
                 ->select([new \MonkeysLegion\Query\RawExpression('COUNT(*)')])
                 ->whereRaw('posts.user_id = users.id'),
@@ -317,8 +319,7 @@ final class Phase5Test extends TestCase
         $results = $this->qb()
             ->whereSubQuery('id', 'IN', fn(QueryBuilder $sq) => $sq
                 ->from('posts')
-                ->select(['user_id'])
-            )
+                ->select(['user_id']))
             ->get();
 
         // Users 1 (Alice) and 2 (Bob) have posts; Charlie does not
@@ -334,8 +335,7 @@ final class Phase5Test extends TestCase
             ->whereSubQuery('id', 'IN', fn(QueryBuilder $sq) => $sq
                 ->from('posts')
                 ->select(['user_id'])
-                ->where('status', '=', 'published'),
-            )
+                ->where('status', '=', 'published'),)
             ->compile();
 
         $sql = $compiled['sql'];

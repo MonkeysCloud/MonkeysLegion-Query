@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -24,7 +25,8 @@ final readonly class UnionClause implements ExpressionInterface
         public string $sql,
         private array $bindings = [],
         public bool $all = false,
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

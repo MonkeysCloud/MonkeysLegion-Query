@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Tests\Unit\Query;
@@ -153,8 +154,12 @@ final class AdvancedFeaturesTest extends TestCase
 class ScopedRepo
 {
     #[Scope]
-    public function active(): void {}
+    public function active(): void
+    {
+    }
 
     #[Scope(isGlobal: true, name: 'softDelete')]
-    public function notDeleted(): void {}
+    public function notDeleted(): void
+    {
+    }
 }

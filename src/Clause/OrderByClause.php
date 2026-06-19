@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -25,7 +26,8 @@ final readonly class OrderByClause implements ExpressionInterface
         public string $column,
         public SortDirection $direction = SortDirection::Asc,
         private array $bindings = [],
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

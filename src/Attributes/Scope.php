@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Attributes;
@@ -34,8 +35,8 @@ final readonly class Scope
     public function __construct(
         /** Whether this scope is applied globally to all queries. */
         public bool $isGlobal = false,
-
         /** Optional name override (defaults to method name). */
         public ?string $name = null,
-    ) {}
+    ) {
+    }
 }

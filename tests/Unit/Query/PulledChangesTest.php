@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Tests\Unit\Query;
@@ -387,8 +388,7 @@ final class PulledChangesTest extends TestCase
             ->where('status', '=', 'active')
             ->whereGroup(fn(QueryBuilder $inner) => $inner
                 ->where('age', '>', 25)
-                ->orWhere('name', '=', 'Alice')
-            )
+                ->orWhere('name', '=', 'Alice'))
             ->compile();
 
         $sql = $compiled['sql'];
@@ -405,8 +405,7 @@ final class PulledChangesTest extends TestCase
             ->where('status', '=', 'active')
             ->orWhereGroup(fn(QueryBuilder $inner) => $inner
                 ->where('age', '<', 20)
-                ->where('name', '=', 'Bob')
-            )
+                ->where('name', '=', 'Bob'))
             ->compile();
 
         $sql = $compiled['sql'];
@@ -419,8 +418,7 @@ final class PulledChangesTest extends TestCase
             ->where('status', '=', 'active')
             ->whereGroup(fn(QueryBuilder $inner) => $inner
                 ->where('age', '>', 30)
-                ->orWhere('name', '=', 'Diana')
-            )
+                ->orWhere('name', '=', 'Diana'))
             ->get();
 
         // Alice(30, active), Charlie(35, active), Diana(28, active)
@@ -660,8 +658,7 @@ final class PulledChangesTest extends TestCase
         $compiled = $this->qb()
             ->withCte('active_users', fn(QueryBuilder $inner) => $inner
                 ->from('users')
-                ->where('status', '=', 'active')
-            )
+                ->where('status', '=', 'active'))
             ->from('active_users')
             ->compile();
 

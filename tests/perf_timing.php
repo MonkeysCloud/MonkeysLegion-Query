@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 /**
@@ -26,12 +27,17 @@ for ($i = 1; $i <= 500; $i++) {
 $conn = new TestConnection($pdo);
 $manager = new TestConnectionManager($conn);
 
-function bench(string $label, Closure $fn, int $iterations = 1000): void {
+function bench(string $label, Closure $fn, int $iterations = 1000): void
+{
     // Warmup
-    for ($i = 0; $i < min(10, $iterations); $i++) $fn();
+    for ($i = 0; $i < min(10, $iterations); $i++) {
+        $fn();
+    }
 
     $start = hrtime(true);
-    for ($i = 0; $i < $iterations; $i++) $fn();
+    for ($i = 0; $i < $iterations; $i++) {
+        $fn();
+    }
     $elapsed = (hrtime(true) - $start) / 1_000_000;
 
     $perOp = $elapsed / $iterations;
@@ -47,13 +53,13 @@ echo "╚═══════════════════════�
 
 // 1. Builder creation
 echo "── Builder Instantiation ──────────────────────────────────────────────────\n";
-bench('QueryBuilder creation (10k)', function() use ($manager) {
+bench('QueryBuilder creation (10k)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users');
 }, 10000);
 
 // 2. Fluent chain compilation
 echo "\n── Query Compilation ──────────────────────────────────────────────────────\n";
-bench('Complex query compile (1k)', function() use ($manager) {
+bench('Complex query compile (1k)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')
         ->where('status', '=', 'active')
         ->whereIn('age', [25, 30, 35])
@@ -63,7 +69,7 @@ bench('Complex query compile (1k)', function() use ($manager) {
         ->compile();
 }, 1000);
 
-bench('Compile with cache hit (1k)', function() use ($manager) {
+bench('Compile with cache hit (1k)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')
         ->where('status', '=', 'val')
         ->compile();
@@ -75,15 +81,15 @@ $hydrator = new EntityHydrator();
 EntityHydrator::clearCache();
 $row = ['id' => 1, 'name' => 'Alice', 'email' => 'alice@test.com', 'status' => 'active', 'age' => 30];
 
-bench('Hydration cold cache (500)', function() use ($hydrator, $row) {
+bench('Hydration cold cache (500)', function () use ($hydrator, $row) {
     $hydrator->hydrate(BenchUser::class, $row);
 }, 500);
 
-bench('Hydration warm cache (1k)', function() use ($hydrator, $row) {
+bench('Hydration warm cache (1k)', function () use ($hydrator, $row) {
     $hydrator->hydrate(BenchUser::class, $row);
 }, 1000);
 
-bench('Dehydration (1k)', function() use ($hydrator) {
+bench('Dehydration (1k)', function () use ($hydrator) {
     $entity = new BenchUser();
     $entity->id = 1;
     $entity->name = 'Alice';
@@ -95,15 +101,15 @@ bench('Dehydration (1k)', function() use ($hydrator) {
 
 // 4. Actual DB queries
 echo "\n── Database Execution ────────────────────────────────────────────────────\n";
-bench('SELECT * LIMIT 10 (500)', function() use ($manager) {
+bench('SELECT * LIMIT 10 (500)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')->limit(10)->get();
 }, 500);
 
-bench('SELECT COUNT(*) (500)', function() use ($manager) {
+bench('SELECT COUNT(*) (500)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')->count();
 }, 500);
 
-bench('SELECT WHERE + ORDER (500)', function() use ($manager) {
+bench('SELECT WHERE + ORDER (500)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')
         ->where('status', '=', 'active')
         ->orderBy('age', 'DESC')
@@ -111,26 +117,26 @@ bench('SELECT WHERE + ORDER (500)', function() use ($manager) {
         ->get();
 }, 500);
 
-bench('INSERT single row (500)', function() use ($manager) {
+bench('INSERT single row (500)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')
         ->insert(['name' => 'Bench', 'email' => 'b@t.com', 'status' => 'active', 'age' => 25]);
 }, 500);
 
 // 5. New Phase 6 methods
 echo "\n── Phase 6 Methods ───────────────────────────────────────────────────────\n";
-bench('whereDate compile (1k)', function() use ($manager) {
+bench('whereDate compile (1k)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')
         ->whereDate('created_at', '=', '2026-01-01')
         ->compile();
 }, 1000);
 
-bench('whereNotBetween compile (1k)', function() use ($manager) {
+bench('whereNotBetween compile (1k)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')
         ->whereNotBetween('age', 20, 30)
         ->compile();
 }, 1000);
 
-bench('increment (500)', function() use ($manager) {
+bench('increment (500)', function () use ($manager) {
     (new QueryBuilder($manager))->from('users')
         ->where('id', '=', 1)
         ->increment('age', 1);
@@ -139,7 +145,7 @@ bench('increment (500)', function() use ($manager) {
 // 6. Clone overhead
 echo "\n── Repository Operations ─────────────────────────────────────────────────\n";
 $baseObj = (object)['a' => 1, 'b' => 2, 'c' => [1,2,3], 'd' => 'test'];
-bench('Object clone (10k)', function() use ($baseObj) {
+bench('Object clone (10k)', function () use ($baseObj) {
     clone $baseObj;
 }, 10000);
 
@@ -149,7 +155,8 @@ echo "  All benchmarks completed. No regressions detected.\n";
 echo "══════════════════════════════════════════════════════════════════════════\n\n";
 
 // ── Test entities ──
-class BenchUser {
+class BenchUser
+{
     #[Field(type: 'integer')]
     public int $id;
     #[Field(type: 'string')]
@@ -162,7 +169,8 @@ class BenchUser {
     public int $age;
 }
 
-class BenchUserRepo extends \MonkeysLegion\Query\Repository\EntityRepository {
+class BenchUserRepo extends \MonkeysLegion\Query\Repository\EntityRepository
+{
     protected string $table = 'users';
     protected string $entityClass = BenchUser::class;
 }

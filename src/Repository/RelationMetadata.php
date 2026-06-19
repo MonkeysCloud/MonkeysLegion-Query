@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Repository;
@@ -28,15 +29,16 @@ final readonly class RelationMetadata
      * @param bool        $isCollection  Whether the relation is a collection (OneToMany/ManyToMany).
      */
     public function __construct(
-        public string  $propertyName,
-        public string  $relationType,
-        public string  $targetEntity,
-        public string  $foreignKey,
+        public string $propertyName,
+        public string $relationType,
+        public string $targetEntity,
+        public string $foreignKey,
         public ?string $mappedBy = null,
         public ?string $inversedBy = null,
         public ?string $joinTable = null,
         public ?string $joinSourceKey = null,
         public ?string $joinTargetKey = null,
-        public bool    $isCollection = false,
-    ) {}
+        public bool $isCollection = false,
+    ) {
+    }
 }

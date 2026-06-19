@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -30,7 +31,8 @@ final readonly class WhereClause implements ExpressionInterface
         public mixed $value = null,
         public WhereBoolean $boolean = WhereBoolean::And,
         private array $bindings = [],
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

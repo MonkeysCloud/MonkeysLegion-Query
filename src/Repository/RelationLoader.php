@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Repository;
@@ -45,7 +46,8 @@ final class RelationLoader
         private readonly ConnectionManagerInterface $manager,
         private readonly EntityHydrator $hydrator,
         private readonly IdentityMap $identityMap,
-    ) {}
+    ) {
+    }
 
     /**
      * Eager-load relations for a list of hydrated entities.

@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -20,7 +21,8 @@ final readonly class GroupByClause implements ExpressionInterface
      */
     public function __construct(
         public array $columns,
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string

@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Query;
@@ -119,35 +120,35 @@ final class QueryBuilder
         get {
             $count = 0;
             // SELECT raw expression bindings
-            foreach ($this->selectColumns as $col) {
-                if ($col instanceof ExpressionInterface) {
-                    $count += count($col->getBindings());
-                }
-            }
+    foreach ($this->selectColumns as $col) {
+        if ($col instanceof ExpressionInterface) {
+            $count += count($col->getBindings());
+        }
+    }
             // CTE bindings
-            if ($this->cteBuilder !== null) {
-                $count += count($this->cteBuilder->getBindings());
-            }
+    if ($this->cteBuilder !== null) {
+        $count += count($this->cteBuilder->getBindings());
+    }
             // JOIN bindings
-            foreach ($this->joins as $j) {
-                $count += count($j->getBindings());
-            }
+    foreach ($this->joins as $j) {
+        $count += count($j->getBindings());
+    }
             // WHERE bindings
-            foreach ($this->wheres as $w) {
-                $count += count($w->getBindings());
-            }
+    foreach ($this->wheres as $w) {
+        $count += count($w->getBindings());
+    }
             // HAVING bindings
-            foreach ($this->havings as $h) {
-                $count += count($h->getBindings());
-            }
+    foreach ($this->havings as $h) {
+        $count += count($h->getBindings());
+    }
             // ORDER BY bindings (vector distance expressions)
-            foreach ($this->orders as $o) {
-                $count += count($o->getBindings());
-            }
+    foreach ($this->orders as $o) {
+        $count += count($o->getBindings());
+    }
             // UNION bindings
-            foreach ($this->unions as $u) {
-                $count += count($u->getBindings());
-            }
+    foreach ($this->unions as $u) {
+        $count += count($u->getBindings());
+    }
             return $count;
         }
     }

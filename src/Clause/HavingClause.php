@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace MonkeysLegion\Query\Clause;
@@ -25,7 +26,8 @@ final readonly class HavingClause implements ExpressionInterface
         public string $expression,
         private array $bindings = [],
         public WhereBoolean $boolean = WhereBoolean::And,
-    ) {}
+    ) {
+    }
 
     #[\Override]
     public function toSql(): string
